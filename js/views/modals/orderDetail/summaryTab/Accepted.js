@@ -1,5 +1,4 @@
 import $ from 'jquery';
-import _ from 'underscore';
 import moment from 'moment';
 import {
   fulfillingOrder,
@@ -7,26 +6,30 @@ import {
   refundOrder,
   events as orderEvents,
 } from '../../../../utils/order';
+import { recordEvent } from '../../../../utils/metrics';
 import loadTemplate from '../../../../utils/loadTemplate';
 import BaseVw from '../../../baseVw';
 
 export default class extends BaseVw {
   constructor(options = {}) {
-    super(options);
+    super({
+      ...options,
+      initialState: {
+        infoText: '',
+        showRefundButton: false,
+        showFulfillButton: false,
+        avatarHashes: {},
+        refundConfirmOn: false,
+        paymentCoin: undefined,
+        ...options.initialState,
+      },
+    });
 
     if (!options.orderId) {
       throw new Error('Please provide the order id.');
     }
 
     this.orderId = options.orderId;
-    this._state = {
-      infoText: '',
-      showRefundButton: false,
-      showFulfillButton: false,
-      avatarHashes: {},
-      refundConfirmOn: false,
-      ...options.initialState || {},
-    };
 
     this.listenTo(orderEvents, 'fulfillingOrder', e => {
       if (e.id === this.orderId) {
@@ -71,6 +74,7 @@ export default class extends BaseVw {
   }
 
   onClickRefundOrder() {
+    recordEvent('OrderDetails_Refund');
     this.setState({ refundConfirmOn: true });
     return false;
   }
@@ -82,6 +86,7 @@ export default class extends BaseVw {
   }
 
   onClickRefundConfirmCancel() {
+    recordEvent('OrderDetails_RefundCancel');
     this.setState({ refundConfirmOn: false });
   }
 
@@ -90,33 +95,14 @@ export default class extends BaseVw {
   }
 
   onClickRefundConfirmed() {
+    recordEvent('OrderDetails_RefundConfirm');
     this.setState({ refundConfirmOn: false });
     refundOrder(this.orderId);
   }
 
   onClickFulfillOrder() {
+    recordEvent('OrderDetails_Fulfill');
     this.trigger('clickFulfillOrder');
-  }
-
-  getState() {
-    return this._state;
-  }
-
-  setState(state, replace = false, renderOnChange = true) {
-    let newState;
-
-    if (replace) {
-      this._state = {};
-    } else {
-      newState = _.extend({}, this._state, state);
-    }
-
-    if (renderOnChange && !_.isEqual(this._state, newState)) {
-      this._state = newState;
-      this.render();
-    }
-
-    return this;
   }
 
   remove() {

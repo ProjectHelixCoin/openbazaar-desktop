@@ -1,12 +1,14 @@
 import $ from 'jquery';
 import _ from 'underscore';
-import '../../utils/velocity';
+import '../../utils/lib/velocity';
 import app from '../../app';
 import { getBody } from '../../utils/selectors';
 import { getSocket } from '../../utils/serverConnect';
 import { openSimpleMessage } from '../modals/SimpleMessage';
 import { insertAtCursor } from '../../utils/dom';
+import { block, isBlocking, events as blockEvents } from '../../utils/block';
 import emojis from '../../data/emojis';
+import { recordEvent } from '../../utils/metrics';
 import loadTemplate from '../../utils/loadTemplate';
 import ChatMessages from '../../collections/ChatMessages';
 import ChatMessage from '../../models/chat/ChatMessage';
@@ -90,6 +92,16 @@ export default class extends baseVw {
 
     this.boundOnFocusin = this.onFocusIn.bind(this);
     this.$el.on('focusin', this.boundOnFocusin);
+
+    this.listenTo(blockEvents, 'blocking', data => {
+      if (!data.peerIds.includes(this.guid)) return;
+      this.$el.addClass('isBlocking');
+    });
+
+    this.listenTo(blockEvents, 'blockFail blocked', data => {
+      if (!data.peerIds.includes(this.guid)) return;
+      this.$el.removeClass('isBlocking');
+    });
   }
 
   get messagesPerPage() {
@@ -144,7 +156,8 @@ export default class extends baseVw {
   }
 
   onClickBlockUser() {
-    alert('coming soon...');
+    recordEvent('Chat_BlockUser');
+    block(this.guid);
   }
 
   onClickSubMenuLink() {
@@ -277,6 +290,8 @@ export default class extends baseVw {
       message: msg,
     }, { parse: true });
 
+    recordEvent('Chat_MessageSent');
+
     const save = chatMessage.save();
 
     if (save) {
@@ -361,8 +376,8 @@ export default class extends baseVw {
         }
       }
 
-      // We'll consider them to be done typing if an acutal message came
-      // in. If they re-start typing, we'll get another socket messsage.
+      // We'll consider them to be done typing if an actual message came
+      // in. If they re-start typing, we'll get another socket message.
       this.hideTypingIndicator();
     } else if (e.jsonData.messageTyping &&
       e.jsonData.messageTyping.subject === this.subject &&
@@ -673,6 +688,7 @@ export default class extends baseVw {
         profile: this.profile,
       });
 
+      this.$el.toggleClass('isBlocking', isBlocking(this.guid));
       this.$('.js-convoMessagesContainer').html(this.convoMessages.render().el);
       this.throttleScrollHandler();
     });

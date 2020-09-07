@@ -1,6 +1,7 @@
 import $ from 'jquery';
 import app from '../../../app';
 import { openSimpleMessage } from '../../modals/SimpleMessage';
+import { recordEvent } from '../../../utils/metrics';
 import loadTemplate from '../../../utils/loadTemplate';
 import BaseModal from '../BaseModal';
 import General from './General';
@@ -9,6 +10,8 @@ import Store from './Store';
 import Addresses from './Addresses';
 import Advanced from './advanced/Advanced';
 import Moderation from './Moderation';
+import Blocked from './Blocked';
+import Wallet from './Wallet';
 
 export default class extends BaseModal {
   constructor(options = {}) {
@@ -31,6 +34,8 @@ export default class extends BaseModal {
       Addresses,
       Advanced,
       Moderation,
+      Blocked,
+      Wallet,
     };
 
     this.listenTo(app.router, 'will-route', () => {
@@ -53,6 +58,7 @@ export default class extends BaseModal {
   tabClick(e) {
     const targ = $(e.target).closest('.js-tab');
 
+    recordEvent('Settings_TabOpen', { tab: targ.data('tab') });
     this.selectTab(targ);
   }
 

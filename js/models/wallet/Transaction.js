@@ -1,13 +1,24 @@
 import app from '../../app';
 import { integerToDecimal } from '../../utils/currency';
+import { getCurrencyByCode as getWalletCurByCode } from '../../data/walletCurrencies';
 import BaseModel from '../BaseModel';
 
 export default class extends BaseModel {
+  constructor(attrs = {}, options = {}) {
+    if (!options.coinType || typeof options.coinType !== 'string') {
+      throw new Error('Please provide a coinType as a non-empty string.');
+    }
+
+    super(attrs, options);
+    this.options = options;
+  }
+
   defaults() {
     return {
       confirmations: 0,
       height: 0,
-      canBumpFee: true,
+      feeBumped: false,
+      allowFeeBump: false,
       memo: '',
     };
   }
@@ -28,6 +39,11 @@ export default class extends BaseModel {
       (attrs = {})[key] = val;
     }
 
+    // set is called internally by Backbone before the contructor is complete, so
+    // this.options might not be there. But... Backbone also passes in the constructor
+    // options, when calling set from the constructor.
+    const coinType = this.options ? this.options.coinType : opts.coinType;
+
     if (
       attrs.confirmations !== this.attributes.confirmations ||
       attrs.timestamp !== this.attributes.timestamp ||
@@ -39,6 +55,13 @@ export default class extends BaseModel {
       const height = attrs.height === undefined ?
         this.attributes.height : attrs.height;
       const stuckTime = 1000 * 60 * 60 * 6; // 6 hours
+      let walletCurData;
+
+      try {
+        walletCurData = getWalletCurByCode(coinType);
+      } catch (e) {
+        // pass
+      }
 
       if (height === -1) {
         attrs.status = 'DEAD';
@@ -46,21 +69,19 @@ export default class extends BaseModel {
         attrs.status = 'UNCONFIRMED';
       } else if (confirmations === 0 && (Date.now() - new Date(timestamp).getTime()) > stuckTime) {
         attrs.status = 'STUCK';
+        attrs.allowFeeBump = !attrs.feeBumped && attrs.value > 0 &&
+          walletCurData && typeof walletCurData.feeBumpTransactionSize === 'number';
       } else if (confirmations > 0 && confirmations <= 5) {
         attrs.status = 'PENDING';
       } else if (confirmations > 5) {
         attrs.status = 'CONFIRMED';
-      }
-
-      if (height !== 0) {
-        attrs.canBumpFee = false;
       }
     }
 
     return super.set(attrs, opts);
   }
 
-  parse(response = {}) {
+  parse(response = {}, options = {}) {
     let returnVal = { ...response };
 
     // The client will in set() manage the status attribute. The reason is that
@@ -79,10 +100,17 @@ export default class extends BaseModel {
           { address: returnVal.memo.slice(12) });
       }
 
+      // The UI has more stringent logic to determine when fee bumping is possible. This model will
+      // provide a allowFeeBump flag to indicate when it's allowed. The canBumpFee flag from the
+      // server is just used to determine whether the fee was already bumped or not.
+      returnVal.feeBumped = returnVal.value > 0 && !returnVal.canBumpFee;
+      delete returnVal.canBumpFee;
+
       returnVal = {
         ...returnVal,
-        // Convert satoshi to BTC
-        value: integerToDecimal(returnVal.value, true),
+        // Convert from base units
+        value: integerToDecimal(returnVal.value,
+          this.options ? this.options.coinType : options.coinType),
       };
     }
 

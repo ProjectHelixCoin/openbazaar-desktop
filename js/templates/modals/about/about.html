@@ -1,19 +1,20 @@
-<div class="topControls flexRow js-btcTicker"></div>
+<div class="topControls flex"></div>
 <div class="flex gutterH">
   <div class="tabColumn contentBox padMd clrP clrBr clrSh3">
     <h1 class="h3 txUp clrT2"><%= ob.polyT('tabMenuHeading') %></h1>
     <div class="boxList tx4 clrTx1Br">
-      <a class="js-tab tab row" data-tab="Contributors"><%= ob.polyT('about.contributorsTab.linkText') %></a>
+      <!--<a class="js-tab tab row" data-tab="Contributors"><%= ob.polyT('about.contributorsTab.linkText') %></a>-->
       <a class="js-tab tab row" data-tab="Donations"><%= ob.polyT('about.donationsTab.linkText') %></a>
       <a class="js-tab tab row" data-tab="License"><%= ob.polyT('about.licenseTab.linkText') %></a>
+      <a class="js-tab tab row" data-tab="Help"><%= ob.polyT('about.helpTab.linkText') %></a>
     </div>
   </div>
   <div class="flexExpand posR">
     <div class="js-tabContent tabContent">
       <div class="contentBox padMd clrP clrBr clrSh3">
         <div class="flexVCent">
-          <div class="floL"><%= ob.brandingBoxT() %></div>
-          <h2 id=tabTitle class="h3 clrT txCtr flexExpand"></h2>
+          <div><%= ob.brandingBoxT() %></div>
+          <h2 id="tabTitle" class="h3 clrT txCtr flexExpand txUnl"></h2>
           <div>
             <div class="tx6 txRgt rowSm">
               <% if (ob.version === ob.serverVersion) { %>
@@ -28,9 +29,9 @@
                   <%= ob.polyT('about.btnUpdateCheck') %>
                 </a>
               <% } else { %>
-                <a class="btn clrP clrBAttGrad clrBrDec1 clrTOnEmph" href="https://github.com/phoreproject/openbazaar-desktop/releases">
+                <a class="btn clrP clrBAttGrad clrBrDec1 clrTOnEmph" href="https://github.com/phoreproject/pm-desktop/releases">
                   <%= ob.polyT('about.downloadLatest') %>
-                </a>              
+                </a>
               <% } %>
             <% } %>
           </div>

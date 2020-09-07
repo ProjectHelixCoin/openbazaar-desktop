@@ -1,20 +1,25 @@
 import app from '../../../app';
 import '../../../lib/select2';
 import { getCurrenciesSortedByCode } from '../../../data/currencies';
+import { endAjaxEvent, recordEvent, startAjaxEvent } from '../../../utils/metrics';
+import { convertCurrency, getExchangeRate } from '../../../utils/currency';
+import loadTemplate from '../../../utils/loadTemplate';
 import { openSimpleMessage } from '../../modals/SimpleMessage';
 import Spend, { spend } from '../../../models/wallet/Spend';
-import { convertCurrency } from '../../../utils/currency';
-import loadTemplate from '../../../utils/loadTemplate';
 import SendConfirmBox from './SpendConfirmBox';
-import FeeChange from '../../components/FeeChange';
 import baseVw from '../../baseVw';
 
 export default class extends baseVw {
   constructor(options = {}) {
+    if (typeof options.coinType !== 'string' || !options.coinType) {
+      throw new Error('Please provide the coinType as a string.');
+    }
+
     super(options);
+    this.coinType = options.coinType;
     this._saveInProgress = false;
     this._sendConfirmOn = false;
-    this.model = new Spend();
+    this.model = new Spend({ wallet: options.coinType });
   }
 
   className() {
@@ -34,16 +39,29 @@ export default class extends baseVw {
     // POSTing payment to the server
     this.saveInProgress = true;
 
+    startAjaxEvent('Wallet_SendConfirm');
+
     spend({
       ...this.model.toJSON(),
       feeLevel: app.localSettings.get('defaultTransactionFee'),
     }).fail(jqXhr => {
-      openSimpleMessage(app.polyglot.t('wallet.sendMoney.sendPaymentFailDialogTitle'),
-        jqXhr.responseJSON && jqXhr.responseJSON.reason || '');
+      let reason = jqXhr.responseJSON && jqXhr.responseJSON.reason || '';
+
+      if (reason === 'ERROR_INVALID_ADDRESS') {
+        reason = app.polyglot.t('wallet.sendMoney.errorInvalidAddress');
+      }
+
+      openSimpleMessage(app.polyglot.t('wallet.sendMoney.sendPaymentFailDialogTitle'), reason);
+      endAjaxEvent('Wallet_SendConfirm', {
+        errors: reason,
+      });
     }).always(() => {
       this.saveInProgress = false;
     })
-      .done(() => this.clearForm());
+      .done(() => {
+        endAjaxEvent('Wallet_SendConfirm');
+        this.clearForm();
+      });
   }
 
   onClickSend(e) {
@@ -55,6 +73,7 @@ export default class extends baseVw {
     this.render();
 
     if (!this.model.validationError) {
+      recordEvent('Wallet_Send', { coin: this.coinType });
       this.sendConfirmBox.setState({ show: true });
       this.fetchFeeEstimate();
     }
@@ -73,12 +92,22 @@ export default class extends baseVw {
     if (!this.saveInProgress) this.$addressInput.focus();
   }
 
-  setFormData(data = {}, focusAddressInput = true) {
+  getFormData($formFields = this.$formFields) {
+    return super.getFormData($formFields);
+  }
+
+  setFormData(data = {}, options = {}) {
+    const opts = {
+      focusAddressInput: true,
+      render: true,
+      ...options,
+    };
+
     this.clearForm();
     this.model.set(data);
-    this.render();
+    if (opts.render) this.render();
     setTimeout(() => {
-      if (focusAddressInput) this.focusAddress();
+      if (opts.focusAddressInput) this.focusAddress();
     });
   }
 
@@ -116,8 +145,9 @@ export default class extends baseVw {
   }
 
   fetchFeeEstimate() {
-    const amount = convertCurrency(this.model.get('amount'), this.model.get('currency'), 'PHR');
-    this.sendConfirmBox.fetchFeeEstimate(amount);
+    const amount = convertCurrency(this.model.get('amount'), this.model.get('currency'),
+      this.coinType);
+    this.sendConfirmBox.fetchFeeEstimate(amount, this.coinType);
   }
 
   get $addressInput() {
@@ -139,14 +169,19 @@ export default class extends baseVw {
 
   render() {
     super.render();
+
+    const defaultCur = typeof getExchangeRate(app.settings.get('localCurrency')) === 'number' ?
+      app.settings.get('localCurrency') : this.coinType;
+
     loadTemplate('modals/wallet/sendMoney.html', (t) => {
       this.$el.html(t({
         ...this.model.toJSON(),
         errors: this.model.validationError || {},
-        currency: this.model.get('currency') || app.settings.get('localCurrency'),
+        currencyCode: this.model.get('currency') || defaultCur,
         currencies: this.currencies ||
           getCurrenciesSortedByCode(),
         saveInProgress: this.saveInProgress,
+        coinType: this.coinType,
       }));
 
       this._$addressInput = null;
@@ -159,14 +194,11 @@ export default class extends baseVw {
       if (this.sendConfirmBox) this.sendConfirmBox.remove();
 
       this.sendConfirmBox = this.createChild(SendConfirmBox, {
+        metricsOrigin: 'Wallet',
         initialState: { ...sendConfirmBoxState || {} },
       });
       this.listenTo(this.sendConfirmBox, 'clickSend', this.onClickConfirmSend);
       this.getCachedEl('.js-sendConfirmContainer').html(this.sendConfirmBox.render().el);
-
-      if (this.feeChange) this.feeChange.remove();
-      this.feeChange = this.createChild(FeeChange);
-      this.$('.js-feeChangeContainer').html(this.feeChange.render().el);
     });
 
     return this;

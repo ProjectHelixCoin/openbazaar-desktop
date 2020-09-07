@@ -1,13 +1,13 @@
-import { clipboard } from 'electron';
+import { clipboard, remote } from 'electron';
 import $ from 'jquery';
 import app from '../../../../app';
 import { openSimpleMessage } from '../../SimpleMessage';
 import Dialog from '../../../modals/Dialog';
+import { endAjaxEvent, recordEvent, startAjaxEvent } from '../../../../utils/metrics';
 import loadTemplate from '../../../../utils/loadTemplate';
 import baseVw from '../../../baseVw';
-import WalletSeed from './WalletSeed';
 import SmtpSettings from './SmtpSettings';
-import ReloadTransactions from './ReloadTransactions';
+import MetricsStatus from './MetricsStatus';
 
 export default class extends baseVw {
   constructor(options = {}) {
@@ -46,32 +46,8 @@ export default class extends baseVw {
     };
   }
 
-  onClickShowSeed() {
-    if (this.walletSeedFetch && this.walletSeedFetch.state() === 'pending') {
-      return this.walletSeedFetch;
-    }
-
-    if (this.walletSeed) this.walletSeed.setState({ isFetching: true });
-
-    this.walletSeedFetch = $.get(app.getServerUrl('wallet/mnemonic')).done((data) => {
-      this.mnemonic = data.mnemonic;
-      if (this.walletSeed) {
-        this.walletSeed.setState({ seed: data.mnemonic });
-      }
-    }).always(() => {
-      if (this.walletSeed) this.walletSeed.setState({ isFetching: false });
-    })
-    .fail(xhr => {
-      openSimpleMessage(
-        app.polyglot.t('settings.advancedTab.server.unableToFetchSeedTitle'),
-        xhr.responseJSON && xhr.responseJSON.reason || ''
-      );
-    });
-
-    return this.walletSeedFetch;
-  }
-
   showConnectionManagement() {
+    recordEvent('Settings_Advanced_ConnectionManagement');
     app.connectionManagmentModal.open();
   }
 
@@ -80,6 +56,7 @@ export default class extends baseVw {
   }
 
   clickPurge() {
+    recordEvent('Settings_PurgeCache');
     this.purgeCache();
   }
 
@@ -89,12 +66,15 @@ export default class extends baseVw {
    * the call fails, even if they have navigated away from the view.
    */
   purgeCache() {
-    this.getCachedEl('.js-purge').addClass('processing');
-    this.getCachedEl('.js-purgeComplete').addClass('hide');
+    this.getCachedEl('.js-purge')
+      .addClass('processing');
+    this.getCachedEl('.js-purgeComplete')
+      .addClass('hide');
 
     this.purge = $.post(app.getServerUrl('ob/purgecache'))
       .always(() => {
-        this.getCachedEl('.js-purge').removeClass('processing');
+        this.getCachedEl('.js-purge')
+          .removeClass('processing');
       })
       .fail((xhr) => {
         const failReason = xhr.responseJSON && xhr.responseJSON.reason || '';
@@ -103,11 +83,13 @@ export default class extends baseVw {
           failReason);
       })
       .done(() => {
-        this.getCachedEl('.js-purgeComplete').removeClass('hide');
+        this.getCachedEl('.js-purgeComplete')
+          .removeClass('hide');
       });
   }
 
   clickBlockData() {
+    recordEvent('Settings_Advanced_ShowBlockData');
     this.showBlockData();
   }
 
@@ -115,11 +97,13 @@ export default class extends baseVw {
    * Calls the server to retrieve and display information about the block the transactions are on
    */
   showBlockData() {
-    this.getCachedEl('.js-blockData').addClass('processing');
+    this.getCachedEl('.js-blockData')
+      .addClass('processing');
 
     this.blockData = $.get(app.getServerUrl('wallet/status'))
       .always(() => {
-        this.getCachedEl('.js-blockData').removeClass('processing');
+        this.getCachedEl('.js-blockData')
+          .removeClass('processing');
       })
       .fail((xhr) => {
         const failReason = xhr.responseJSON && xhr.responseJSON.reason || '';
@@ -132,21 +116,36 @@ export default class extends baseVw {
           text: app.polyglot.t('settings.advancedTab.server.blockDataCopy'),
           fragment: 'copyBlockData',
         }];
-        const message = `<p><b>Best Hash:</b><br> ${data.bestHash}</p><p><b>Height:</b><br>` +
-          `${data.height}</p>`;
+        const message = Object.keys(data)
+          .map(coin => {
+            // If the block isn't available, a long string of zeroes is returned.
+            const hash = !/^0*$/.test(data[coin].bestHash) ? data[coin].bestHash :
+              app.polyglot.t('settings.advancedTab.server.blockHashUnknown');
+            const hashTxt = app.polyglot.t('settings.advancedTab.server.blockBestHash', { hash });
+            const height = data[coin].height ||
+              app.polyglot.t('settings.advancedTab.server.blockHeightUnknown');
+            const heightTxt = app.polyglot.t('settings.advancedTab.server.blockHeight', { height });
+            return {
+              htmlString: `<p><b>${coin}</b><br>${hashTxt}<br>${heightTxt}</p>`,
+              textString: `${coin}\n${hashTxt}\n${heightTxt}`,
+            };
+          });
         const blockDataDialog = new Dialog({
           title: app.polyglot.t('settings.advancedTab.server.blockDataTitle'),
-          message,
+          message: message.map(msg => msg.htmlString)
+            .join(''),
+          messageClass: 'tx6',
           buttons,
           showCloseButton: true,
           removeOnClose: true,
-        }).render().open();
+        }).render()
+          .open();
         this.listenTo(blockDataDialog, 'click-copyBlockData', () => {
-          clipboard.writeText(`Best Hash: ${data.bestHash} Height: ${data.height}`);
+          clipboard.writeText(message.map(msg => msg.textString)
+            .join('\n\n'));
         });
       });
   }
-
 
   save() {
     this.localSettings.set(this.getFormData(this.$localFields));
@@ -170,6 +169,8 @@ export default class extends baseVw {
         duration: 9999999999999999,
       });
 
+      startAjaxEvent('Settings_Advanced_Save');
+
       // let's save and monitor both save processes
       const localSave = this.localSettings.save();
       const serverSave = this.settings.save(serverFormData, {
@@ -184,6 +185,7 @@ export default class extends baseVw {
             msg: app.polyglot.t('settings.advancedTab.statusSaveComplete'),
             type: 'confirmed',
           });
+          endAjaxEvent('Settings_Advanced_Save');
         })
         .fail((...args) => {
           // One has failed, the other may have also failed or may
@@ -198,9 +200,13 @@ export default class extends baseVw {
             msg: app.polyglot.t('settings.advancedTab.statusSaveFailed'),
             type: 'warning',
           });
+          endAjaxEvent('Settings_Advanced_Save', {
+            errors: errMsg,
+          });
         })
         .always(() => {
-          this.getCachedEl('.js-save').removeClass('processing');
+          this.getCachedEl('.js-save')
+            .removeClass('processing');
           setTimeout(() => statusMessage.remove(), 3000);
         });
     }
@@ -208,7 +214,8 @@ export default class extends baseVw {
     this.render();
 
     if (!this.localSettings.validationError && !this.settings.validationError) {
-      this.getCachedEl('.js-save').addClass('processing');
+      this.getCachedEl('.js-save')
+        .addClass('processing');
     } else {
       const $firstErr = this.$('.errorList:first');
 
@@ -223,12 +230,6 @@ export default class extends baseVw {
     }
   }
 
-  get reloadTransactions() {
-    if (this._reloadTransactions) return this._reloadTransactions;
-    this._reloadTransactions = this.createChild(ReloadTransactions);
-    return this._reloadTransactions;
-  }
-
   get $smtpSettingsFields() {
     const selector = `.js-smtpSettingsForm select[name], .js-smtpSettingsForm input[name],
       .js-smtpSettingsForm textarea[name]:not([class*="trumbowyg"]),
@@ -237,22 +238,18 @@ export default class extends baseVw {
     return this.getCachedEl(selector);
   }
 
-  remove() {
-    if (this.resync) this.resync.abort();
-    super.remove();
-  }
-
   render() {
     super.render();
+    const bundled = remote.getGlobal('isBundledApp');
     loadTemplate('modals/settings/advanced/advanced.html', (t) => {
       this.$el.html(t({
         errors: {
           ...(this.settings.validationError || {}),
           ...(this.localSettings.validationError || {}),
         },
-        isSyncing: this.resync && this.resync.state() === 'pending',
         isPurging: this.purge && this.purge.state() === 'pending',
         isGettingBlockData: this.blockData && this.blockData.state() === 'pending',
+        bundled,
         ...this.settings.toJSON(),
         ...this.localSettings.toJSON(),
       }));
@@ -266,25 +263,19 @@ export default class extends baseVw {
         .not('[data-persistence-location="local"]');
       this.$localFields = this.$('[data-persistence-location="local"]');
 
-      if (this.walletSeed) this.walletSeed.remove();
-      this.walletSeed = this.createChild(WalletSeed, {
-        initialState: {
-          seed: this.mnemonic || '',
-          isFetching: this.walletSeedFetch && this.walletSeedFetch.state() === 'pending',
-        },
-      });
-      this.listenTo(this.walletSeed, 'clickShowSeed', this.onClickShowSeed);
-      this.getCachedEl('.js-walletSeedContainer').append(this.walletSeed.render().el);
-
       if (this.smtpSettings) this.smtpSettings.remove();
       this.smtpSettings = this.createChild(SmtpSettings, {
         model: this.settings.get('smtpSettings'),
       });
-      this.getCachedEl('.js-smtpSettingsContainer').html(this.smtpSettings.render().el);
+      this.getCachedEl('.js-smtpSettingsContainer')
+        .html(this.smtpSettings.render().el);
 
-      if (this.reloadTransactions) this.reloadTransactions.delegateEvents();
-      this.getCachedEl('.js-reloadTransactionsContainer')
-        .append(this.reloadTransactions.render().el);
+      if (this.metricsStatus) this.metricsStatus.remove();
+      if (bundled) {
+        this.metricsStatus = this.createChild(MetricsStatus);
+        this.getCachedEl('.js-metricsStatusWrapper')
+          .append(this.metricsStatus.render().el);
+      }
     });
 
     return this;

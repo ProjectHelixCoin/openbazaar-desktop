@@ -13,7 +13,7 @@ export default class extends BaseVw {
     this._state = {
       disputerName: '',
       claim: '',
-      showResolveButton: true,
+      showResolveButton: false,
       ...options.initialState || {},
     };
 
@@ -36,10 +36,6 @@ export default class extends BaseVw {
 
   onClickResolveDispute() {
     this.trigger('clickResolveDispute');
-  }
-
-  getState() {
-    return this._state;
   }
 
   setState(state, replace = false, renderOnChange = true) {

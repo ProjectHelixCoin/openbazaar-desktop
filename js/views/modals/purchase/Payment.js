@@ -1,24 +1,31 @@
 /*
-  This view is also used by the Order Detail overlay. If you make any changes, please
-  ensure they are compatible with both the Purchase and Order Detail flows.
-*/
+ This view is also used by the Order Detail overlay. If you make any changes, please
+ ensure they are compatible with both the Purchase and Order Detail flows.
+ */
 
 import app from '../../../app';
 import loadTemplate from '../../../utils/loadTemplate';
 import { formatCurrency, integerToDecimal } from '../../../utils/currency';
+import { getCurrencyByCode as getWalletCurByCode } from '../../../data/walletCurrencies';
 import { getSocket } from '../../../utils/serverConnect';
 import BaseVw from '../../baseVw';
 import SpendConfirmBox from '../wallet/SpendConfirmBox';
 import qr from 'qr-encode';
 import { clipboard } from 'electron';
-import { spend } from '../../../models/wallet/Spend';
+import { orderSpend } from '../../../models/wallet/Spend';
 import { openSimpleMessage } from '../../modals/SimpleMessage';
 import { launchWallet } from '../../../utils/modalManager';
+import {
+  startPrefixedAjaxEvent,
+  endPrefixedAjaxEvent,
+  recordPrefixedEvent,
+} from '../../../utils/metrics';
 
 export default class extends BaseVw {
   constructor(options = {}) {
     if (typeof options.balanceRemaining !== 'number') {
-      throw new Error('Please provide the balance remaining in BTC as a number.');
+      throw new Error('Please provide the balance remaining (in the server\'s' +
+        ' currency) as a number.');
     }
 
     if (!options.paymentAddress) {
@@ -33,12 +40,31 @@ export default class extends BaseVw {
       throw new Error('Please provide a boolean indicating whether the order is moderated.');
     }
 
+    if (!options.metricsOrigin) {
+      throw new Error('Please provide an origin for the metrics reporting');
+    }
+
+    let paymentCoinData;
+
+    try {
+      paymentCoinData = getWalletCurByCode(options.paymentCoin);
+    } catch (e) {
+      // pass
+    }
+
+    if (!paymentCoinData) {
+      throw new Error(`Unable to obtain wallet currency data for "${options.paymentCoin}"`);
+    }
+
     super(options);
     this.options = options;
     this._balanceRemaining = options.balanceRemaining;
     this.paymentAddress = options.paymentAddress;
     this.orderId = options.orderId;
     this.isModerated = options.isModerated;
+    this.metricsOrigin = options.metricsOrigin;
+    this.paymentCoin = options.paymentCoin;
+    this.paymentCoinData = paymentCoinData;
 
     const serverSocket = getSocket();
     if (serverSocket) {
@@ -46,7 +72,8 @@ export default class extends BaseVw {
         // listen for a payment socket message, to react to payments from all sources
         if (e.jsonData.notification && e.jsonData.notification.type === 'payment') {
           if (e.jsonData.notification.orderId === this.orderId) {
-            const amount = integerToDecimal(e.jsonData.notification.fundingTotal, true);
+            const amount = integerToDecimal(e.jsonData.notification.fundingTotal,
+              this.paymentCoin);
             if (amount >= this.balanceRemaining) {
               this.getCachedEl('.js-payFromWallet').removeClass('processing');
               this.trigger('walletPaymentComplete', e.jsonData.notification);
@@ -64,9 +91,8 @@ export default class extends BaseVw {
   set balanceRemaining(amount) {
     if (amount !== this._balanceRemaining) {
       this._balanceRemaining = amount;
-      this.confirmWallet.render();
-      this.$amountDueLine.html(this.amountDueLine);
-      this.$qrCodeImg.attr('src', this.qrDataUri);
+      this.getCachedEl('.js-amountDueLine').html(this.amountDueLine);
+      this.getCachedEl('.js-qrCodeImg').attr('src', this.qrDataUri);
     }
   }
 
@@ -81,15 +107,16 @@ export default class extends BaseVw {
   events() {
     return {
       'click .js-payFromWallet': 'clickPayFromWallet',
-      'click .js-payFromAlt': 'clickPayFromAlt',
-      'click .js-copyAmount': 'copyAmount',
-      'click .js-copyAddress': 'copyAddress',
+      'click .js-amountRow': 'copyAmount',
+      'click .js-addressRow': 'copyAddress',
       'click .js-fundWallet': 'clickFundWallet',
     };
   }
 
   clickPayFromWallet(e) {
-    const insufficientFunds = this.balanceRemaining > app.walletBalance.get('confirmed');
+    const walletBalance = app.walletBalances.get(this.paymentCoin);
+    const insufficientFunds = this.balanceRemaining >
+     (walletBalance ? walletBalance.get('confirmed') : 0);
 
     if (insufficientFunds) {
       this.spendConfirmBox.setState({
@@ -97,7 +124,15 @@ export default class extends BaseVw {
         fetchFailed: true,
         fetchError: 'ERROR_INSUFFICIENT_FUNDS',
       });
+      recordPrefixedEvent('PayFromWallet', this.metricsOrigin, {
+        currency: this.paymentCoin,
+        sufficientFunds: false,
+      });
     } else {
+      recordPrefixedEvent('PayFromWallet', this.metricsOrigin, {
+        currency: this.paymentCoin,
+        sufficientFunds: true,
+      });
       this.spendConfirmBox.setState({ show: true });
       this.spendConfirmBox.fetchFeeEstimate(this.balanceRemaining);
     }
@@ -112,15 +147,28 @@ export default class extends BaseVw {
   walletConfirm() {
     this.getCachedEl('.js-payFromWallet').addClass('processing');
     this.spendConfirmBox.setState({ show: false });
+    const currency = this.paymentCoin;
+
+    startPrefixedAjaxEvent('SpendFromWallet', this.metricsOrigin);
 
     try {
-      spend({
+      orderSpend({
+        orderId: this.orderId,
         address: this.paymentAddress,
         amount: this.balanceRemaining,
-        currency: 'PHR',
+        currency,
+        wallet: currency,
       })
+        .done(() => {
+          endPrefixedAjaxEvent('SpendFromWallet', this.metricsOrigin, { currency });
+        })
         .fail(jqXhr => {
-          this.showSpendError(jqXhr.responseJSON && jqXhr.responseJSON.reason || '');
+          const err = jqXhr.responseJSON && jqXhr.responseJSON.reason || '';
+          this.showSpendError(err);
+          endPrefixedAjaxEvent('SpendFromWallet', this.metricsOrigin, {
+            currency,
+            errors: err || 'unknown error',
+          });
           if (this.isRemoved()) return;
           this.getCachedEl('.js-payFromWallet').removeClass('processing');
         });
@@ -135,23 +183,23 @@ export default class extends BaseVw {
   copyAmount() {
     clipboard.writeText(String(this.balanceRemaining));
 
-    this.$copyAmount.addClass('active');
+    this.getCachedEl('.js-copyAmount').addClass('active');
     if (this.hideCopyAmountTimer) {
       clearTimeout(this.hideCopyAmountTimer);
     }
     this.hideCopyAmountTimer = setTimeout(
-      () => this.$copyAmount.removeClass('active'), 3000);
+      () => this.getCachedEl('.js-copyAmount').removeClass('active'), 3000);
   }
 
   copyAddress() {
     clipboard.writeText(String(this.paymentAddress));
 
-    this.$copyAddress.addClass('active');
+    this.getCachedEl('.js-copyAddress').addClass('active');
     if (this.hideCopyAddressTimer) {
       clearTimeout(this.hideCopyAddressTimer);
     }
     this.hideCopyAddressTimer = setTimeout(
-      () => this.$copyAddress.removeClass('active'), 3000);
+      () => this.getCachedEl('.js-copyAddress').removeClass('active'), 3000);
   }
 
   clickFundWallet() {
@@ -160,32 +208,20 @@ export default class extends BaseVw {
 
   get amountDueLine() {
     return app.polyglot.t('purchase.pendingSection.pay',
-      { amountBTC: formatCurrency(this.balanceRemaining, 'PHR') });
+      { amountBTC: formatCurrency(this.balanceRemaining, this.paymentCoin) });
   }
 
   get qrDataUri() {
-    const btcURL = `phore:${this.paymentAddress}?amount=${this.balanceRemaining}`;
-    return qr(btcURL, { type: 8, size: 5, level: 'Q' });
+    const address = this.paymentCoinData.qrCodeText(this.paymentAddress);
+    const URL = `${address}?amount=${this.balanceRemaining}`;
+    return qr(URL, { type: 8, size: 5, level: 'M' });
   }
 
-  get $copyAmount() {
-    return this._$copyAmount ||
-      (this._$copyAmount = this.$('.js-copyAmount'));
-  }
-
-  get $copyAddress() {
-    return this._$copyAddress ||
-      (this._$copyAddress = this.$('.js-copyAddress'));
-  }
-
-  get $amountDueLine() {
-    return this._$amountDueLine ||
-      (this._$amountDueLine = this.$('.js-amountDueLine'));
-  }
-
-  get $qrCodeImg() {
-    return this._$qrCodeImg ||
-      (this._$qrCodeImg = this.$('.js-qrCodeImg'));
+  remove() {
+    if (this.hideCopyAmountTimer) {
+      clearTimeout(this.hideCopyAmountTimer);
+    }
+    super.remove();
   }
 
   render() {
@@ -201,17 +237,15 @@ export default class extends BaseVw {
           qrDataUri: this.qrDataUri,
           walletIconTmpl,
           isModerated: this.isModerated,
+          paymentCoin: this.paymentCoin,
         }));
       });
 
-      this._$copyAmount = null;
-      this._$copyAddress = null;
-      this._$amountDueLine = null;
-      this._$qrCodeImg = null;
-
       this.spendConfirmBox = this.createChild(SpendConfirmBox, {
+        metricsOrigin: this.metricsOrigin,
         initialState: {
           btnSendText: app.polyglot.t('purchase.pendingSection.btnConfirmedPay'),
+          coinType: this.paymentCoin,
         },
       });
       this.listenTo(this.spendConfirmBox, 'clickSend', this.walletConfirm);

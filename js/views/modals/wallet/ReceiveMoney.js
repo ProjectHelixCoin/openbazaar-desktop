@@ -1,98 +1,74 @@
 import { clipboard } from 'electron';
-import _ from 'underscore';
+import qr from 'qr-encode';
+import { getCurrencyByCode as getWalletCurByCode } from '../../../data/walletCurrencies';
+import app from '../../../app';
 import loadTemplate from '../../../utils/loadTemplate';
 import baseVw from '../../baseVw';
-import qr from 'qr-encode';
 
 export default class extends baseVw {
   constructor(options = {}) {
-    super(options);
-
-    this._state = {
-      ...options.initialState || {},
-    };
+    super({
+      initialState: {
+        coinType: 'BTC',
+        ...options.initialState,
+      },
+    });
   }
 
   className() {
-    return 'receiveMoney';
+    return 'receiveMoney padMd';
   }
 
   events() {
     return {
-      'click .js-receiveAddress': 'onClickReceiveAddress',
-      'click .js-receiveQrCode': 'onClickReceiveQrCode',
-      'click .js-cancelReceiveBtn': 'onClickCancelReceive',
+      'click .js-copyAddress': 'copyAddressToClipboard',
+      'click .js-receiveAddress': 'copyAddressToClipboard',
+      'click .js-receiveQrCode': 'copyAddressToClipboard',
     };
-  }
-
-  getState() {
-    return this._state;
-  }
-
-  setState(state, replace = false) {
-    let newState;
-
-    if (replace) {
-      this._state = {};
-    } else {
-      newState = _.extend({}, this._state, state);
-    }
-
-    if (!_.isEqual(this._state, newState)) {
-      this._state = newState;
-      this.render();
-    }
-
-    return this;
-  }
-
-  onClickReceiveAddress() {
-    this.copyAddressToClipboard();
-  }
-
-  onClickReceiveQrCode() {
-    this.copyAddressToClipboard();
-  }
-
-  onClickCancelReceive() {
-    this.trigger('click-cancel');
   }
 
   copyAddressToClipboard() {
     clipboard.writeText(this.getState().address);
-    clearTimeout(this.copyTextFadeoutTimeout);
-    this.$copiedText.stop()
-      .fadeIn(600, () => {
-        this.copyTextFadeoutTimeout = setTimeout(() => {
-          this.$copiedText.fadeOut(600);
-        }, 1000);
-      });
-  }
+    clearTimeout(this.copyTextTimeout);
+    const $copyText = this.getCachedEl('.js-copyAddress')
+      .addClass('invisible');
+    const $copiedText = this.getCachedEl('.js-copiedText')
+      .stop()
+      .show();
 
-  get $copiedText() {
-    return this._$copiedText ||
-      (this._$copiedText = this.$('.js-copiedText'));
+    this.copyTextTimeout = setTimeout(() => {
+      $copiedText.hide();
+      $copyText.removeClass('invisible');
+    }, 1000);
   }
 
   render() {
+    super.render();
+
     loadTemplate('modals/wallet/receiveMoney.html', (t) => {
       // defaulting to an empty image - needed for proper spacing
       // when the spinner is showing
       let qrDataUri = 'data:image/gif;base64,R0lGODlhAQABAAAAACw=';
       const address = this.getState().address;
+      const coinType = this.getState().coinType;
+      let walletCur;
 
-      if (address) {
-        qrDataUri = qr(`phore:${address}`,
-          { type: 6, size: 5, level: 'Q' });
+      try {
+        walletCur = getWalletCurByCode(coinType);
+      } catch (e) {
+        // pass
+      }
+
+      if (address && walletCur) {
+        qrDataUri = qr(walletCur.qrCodeText(address),
+          { type: 7, size: 5, level: 'M' });
       }
 
       this.$el.html(t({
         ...this._state,
         qrDataUri,
-        errors: {},
+        coinName: app.polyglot.t(`cryptoCurrencies.${coinType}`, { _: coinType }),
       }));
-
-      this._$copiedText = null;
     });
 
     return this;

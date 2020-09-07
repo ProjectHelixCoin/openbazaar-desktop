@@ -1,23 +1,39 @@
 import $ from 'jquery';
 import _ from 'underscore';
+import Backbone, { Collection } from 'backbone';
 import 'jquery-zoom';
 import is from 'is_js';
 import app from '../../../app';
 import '../../../lib/select2';
-import '../../../utils/velocity';
+import '../../../utils/lib/velocity';
 import { getAvatarBgImage } from '../../../utils/responsive';
-import { convertAndFormatCurrency } from '../../../utils/currency';
+import {
+  getCurrencyValidity,
+  renderFormattedCurrency,
+} from '../../../utils/currency';
 import loadTemplate from '../../../utils/loadTemplate';
 import { launchEditListingModal } from '../../../utils/modalManager';
+import {
+  getInventory,
+  events as inventoryEvents,
+} from '../../../utils/inventory';
+import { endAjaxEvent, recordEvent, startAjaxEvent } from '../../../utils/metrics';
+import { events as outdatedListingHashesEvents } from '../../../utils/outdatedListingHashes';
 import { getTranslatedCountries } from '../../../data/countries';
 import BaseModal from '../BaseModal';
 import Purchase from '../purchase/Purchase';
 import Rating from './Rating';
-import Reviews from './Reviews';
+import Reviews from '../../reviews/Reviews';
 import SocialBtns from '../../components/SocialBtns';
+import QuantityDisplay from '../../components/QuantityDisplay';
 import { events as listingEvents } from '../../../models/listing/';
+import Listings from '../../../collections/Listings';
 import PopInMessage, { buildRefreshAlertMessage } from '../../components/PopInMessage';
 import { openSimpleMessage } from '../SimpleMessage';
+import NsfwWarning from '../NsfwWarning';
+import MoreListings from './MoreListings';
+import CryptoTradingPair from '../../components/CryptoTradingPair';
+import SupportedCurrenciesList from '../../components/SupportedCurrenciesList';
 
 export default class extends BaseModal {
   constructor(options = {}) {
@@ -26,29 +42,29 @@ export default class extends BaseModal {
     }
 
     const opts = {
-      removeOnClose: false,
+      checkNsfw: true,
+      removeOnClose: true,
       ...options,
     };
 
     super(opts);
     this.options = opts;
+
     this._shipsFreeToMe = this.model.shipsFreeToMe;
     this.activePhotoIndex = 0;
     this.totalPrice = this.model.get('item').get('price');
+    this._purchaseModal = null;
+    this._latestHash = this.model.get('hash');
+    this._renderedHash = null;
 
     // Sometimes a profile model is available and the vendor info
     // can be obtained from that.
     if (opts.profile) {
-      const avatarHashes = opts.profile.get('avatarHashes');
-
       this.vendor = {
         peerID: opts.profile.id,
         name: opts.profile.get('name'),
         handle: opts.profile.get('handle'),
-        avatar: {
-          tiny: avatarHashes.get('tiny'),
-          small: avatarHashes.get('small'),
-        },
+        avatarHashes: opts.profile.get('avatarHashes').toJSON(),
       };
     }
 
@@ -75,12 +91,24 @@ export default class extends BaseModal {
         }
       });
 
-    if (this.model.isOwnListing) {
-      this.listenTo(listingEvents, 'saved', (md, savedOpts) => {
-        const slug = this.model.get('slug');
+    this.listenTo(this.model, 'someChange', () => this.showDataChangedMessage());
 
-        if (savedOpts.slug === slug && savedOpts.hasChanged()) {
-          this.showDataChangedMessage();
+    if (this.model.isOwnListing) {
+      this.listenTo(listingEvents, 'saved', (md, e) => {
+        const slug = this.model.get('slug');
+        if (e.slug === slug) {
+          // Factoring out the inventory from the listing data because
+          // the inventory will auto-update on a change - no need for a
+          // refresh pop-up if that's the only thing that changed.
+          const prev = e.prev;
+          delete prev.item.cryptoQuantity;
+
+          const cur = md.toJSON();
+          delete cur.item.cryptoQuantity;
+
+          if (!(_.isEqual(prev, cur))) {
+            this.showDataChangedMessage();
+          }
         }
       });
 
@@ -92,6 +120,21 @@ export default class extends BaseModal {
       this.listenTo(app.settings, 'change:localCurrency', () => this.showDataChangedMessage());
       this.listenTo(app.localSettings, 'change:bitcoinUnit', () => this.showDataChangedMessage());
     }
+
+    this.hasVerifiedMods = app.verifiedMods.matched(this.model.get('moderators')).length > 0;
+
+    this.listenTo(app.verifiedMods, 'update', () => {
+      const newHasVerifiedMods = app.verifiedMods.matched(this.model.get('moderators')).length > 0;
+      if (newHasVerifiedMods !== this.hasVerifiedMods) {
+        this.hasVerifiedMods = newHasVerifiedMods;
+        this.showDataChangedMessage();
+      }
+    });
+
+    this.listenTo(outdatedListingHashesEvents, 'newHash', e => {
+      this._latestHash = e.newHash;
+      if (e.oldHash === this._renderedHash) this.outdateHash();
+    });
 
     this.rating = this.createChild(Rating);
 
@@ -109,10 +152,66 @@ export default class extends BaseModal {
 
     this.reviews = this.createChild(Reviews, {
       async: true,
+      showListingData: true,
+      initialState: {
+        isFetchingRatings: true,
+      },
     });
+
+    if (this.model.isCrypto) {
+      startAjaxEvent('Listing_InventoryFetch');
+      this.inventoryFetch = getInventory(this.vendor.peerID, {
+        slug: this.model.get('slug'),
+        coinDivisibility: this.model.get('metadata')
+          .get('coinDivisibility'),
+      })
+        .done(e => {
+          this._inventory = e.inventory;
+          endAjaxEvent('Listing_InventoryFetch', {
+            ownListing: this.model.isOwnListing,
+          });
+        })
+        .fail(e => {
+          endAjaxEvent('Listing_InventoryFetch', {
+            ownListing: this.model.isOwnListing,
+            errors: e.error || e.errCode || 'unknown error',
+          });
+        });
+      this.listenTo(inventoryEvents, 'inventory-change',
+        e => (this._inventory = e.inventory));
+    }
+
+    this.moreListingsCol = new Listings([], { guid: this.vendor.peerID });
+
+    const fetchOpts =
+      this.vendor.peerID === app.profile.id ? {} :
+      {
+        data: $.param({
+          'max-age': 60 * 60, // 1 hour
+        }),
+      };
+
+    this.moreListingsFetch = this.moreListingsCol.fetch(fetchOpts)
+      .done(() => {
+        this.moreListingsData = this.randomizeMoreListings(this.moreListingsCol);
+        setTimeout(() => {
+          if (this.moreListings) {
+            this.moreListings.setState({
+              listings: this.moreListingsData,
+            });
+          }
+        });
+      });
 
     this.boundDocClick = this.onDocumentClick.bind(this);
     $(document).on('click', this.boundDocClick);
+
+    this.rendered = false;
+    this._outdatedHashState = null;
+
+    this.purchaseErrorT = null;
+    loadTemplate('modals/listingDetail/purchaseError.html',
+      t => (this.purchaseErrorT = t));
   }
 
   className() {
@@ -137,6 +236,7 @@ export default class extends BaseModal {
       'click .js-purchaseBtn': 'startPurchase',
       'click .js-rating': 'clickRating',
       'change .js-variantSelect': 'onChangeVariantSelect',
+      'click .js-reloadOutdated': 'onClickReloadOutdated',
       ...super.events(),
     };
   }
@@ -152,10 +252,11 @@ export default class extends BaseModal {
     this.rating.fetched = true;
     this.rating.render();
     this.reviews.reviewIDs = pData.ratings || [];
-    this.reviews.render();
+    this.reviews.setState({ isFetchingRatings: false });
   }
 
   onClickEditListing() {
+    recordEvent('Listing_EditFromListing');
     const onCloseEditModal = () => {
       this.close();
 
@@ -185,12 +286,14 @@ export default class extends BaseModal {
   }
 
   onClickCloneListing() {
+    recordEvent('Listing_CloneFromListing');
     launchEditListingModal({
       model: this.model.cloneListing(),
     });
   }
 
   onClickDeleteListing() {
+    recordEvent('Listing_DeleteFromListing');
     this.$deleteConfirmedBox.removeClass('hide');
     // don't bubble to the document click handler
     return false;
@@ -202,6 +305,7 @@ export default class extends BaseModal {
   }
 
   onClickConfirmedDelete() {
+    recordEvent('Listing_DeleteFromListingConfirm');
     if (this.destroyRequest && this.destroyRequest.state === 'pending') return;
     this.destroyRequest = this.model.destroy({ wait: true });
 
@@ -222,23 +326,47 @@ export default class extends BaseModal {
   }
 
   onClickConfirmCancel() {
+    recordEvent('Listing_DeleteFromListingCancel');
     this.$deleteConfirmedBox.addClass('hide');
   }
 
   onClickGotoPhotos() {
+    recordEvent('Listing_GoToPhotos', { ownListing: this.model.isOwnListing });
     this.gotoPhotos();
   }
 
   onClickGoToStore() {
     if (this.options.openedFromStore) {
+      recordEvent('Listing_GoToStore',
+        {
+          OpenedFromStore: true,
+          ownListing: this.model.isOwnListing,
+        });
       this.close();
     } else {
+      recordEvent('Listing_GoToStore',
+        {
+          OpenedFromStore: false,
+          ownListing: this.model.isOwnListing,
+        });
       const base = this.vendor.handle ? `@${this.vendor.handle}` : this.vendor.peerID;
       app.router.navigateUser(`${base}/store`, this.vendor.peerID, { trigger: true });
     }
   }
 
+  randomizeMoreListings(cl) {
+    if (!(cl instanceof Collection)) {
+      throw new Error('Please provide a Collection instance.');
+    }
+
+    return _.shuffle(cl.models)
+      .filter(md => md.get('slug') !== this.model.get('slug'))
+      .map(md => md.toJSON())
+      .slice(0, 8);
+  }
+
   gotoPhotos() {
+    recordEvent('Listing_GoToPhotos', { ownListing: this.model.isOwnListing });
     this.$photoSection.velocity(
       'scroll',
       {
@@ -249,6 +377,7 @@ export default class extends BaseModal {
   }
 
   clickRating() {
+    recordEvent('Listing_ClickOnRatings', { ownListing: this.model.isOwnListing });
     this.gotoReviews();
   }
 
@@ -263,6 +392,7 @@ export default class extends BaseModal {
   }
 
   onClickPhotoSelect(e) {
+    recordEvent('Listing_ClickOnPhoto', { ownListing: this.model.isOwnListing });
     this.setSelectedPhoto($(e.target).index('.js-photoSelect'));
   }
 
@@ -313,6 +443,7 @@ export default class extends BaseModal {
   }
 
   onClickPhotoPrev() {
+    recordEvent('Listing_ClickOnPhotoPrev', { ownListing: this.model.isOwnListing });
     let targetIndex = this.activePhotoIndex - 1;
     const imagesLength = parseInt(this.model.toJSON().item.images.length, 10);
 
@@ -322,6 +453,7 @@ export default class extends BaseModal {
   }
 
   onClickPhotoNext() {
+    recordEvent('Listing_ClickOnPhotoNext', { ownListing: this.model.isOwnListing });
     let targetIndex = this.activePhotoIndex + 1;
     const imagesLength = parseInt(this.model.toJSON().item.images.length, 10);
 
@@ -331,6 +463,7 @@ export default class extends BaseModal {
   }
 
   onClickFreeShippingLabel() {
+    recordEvent('Listing_ClickFreeShippingLabel', { ownListing: this.model.isOwnListing });
     this.gotoShippingOptions();
   }
 
@@ -361,9 +494,9 @@ export default class extends BaseModal {
     const _totalPrice = this.model.get('item').get('price') + surcharge;
     if (_totalPrice !== this.totalPrice) {
       this.totalPrice = _totalPrice;
-      const adjPrice = convertAndFormatCurrency(this.totalPrice,
+      const adjPrice = renderFormattedCurrency(this.totalPrice,
         this.model.get('metadata').get('pricingCurrency'), app.settings.get('localCurrency'));
-      this.getCachedEl('.js-price').text(adjPrice);
+      this.getCachedEl('.js-price').html(adjPrice);
     }
   }
 
@@ -385,6 +518,31 @@ export default class extends BaseModal {
 
       this.$popInMessages.append(this.dataChangePopIn.render().el);
     }
+  }
+
+  outdateHash() {
+    const tip = app.polyglot.t('listingDetail.errors.outdatedHash', {
+      reloadLink: '<a class="js-reloadOutdated">' +
+        `${app.polyglot.t('listingDetail.errors.reloadOutdatedHash')}<a>`,
+    });
+    this.getCachedEl('.js-purchaseErrorWrap').html(
+      this.purchaseErrorT({ tip })
+    );
+    this.getCachedEl('.js-purchaseBtn').addClass('disabled');
+  }
+
+  onClickReloadOutdated() {
+    let defaultPrevented = false;
+
+    this.trigger('clickReloadOutdated', {
+      preventDefault: () => (defaultPrevented = true),
+    });
+
+    setTimeout(() => {
+      if (!defaultPrevented) {
+        Backbone.history.loadUrl();
+      }
+    });
   }
 
   onSetShippingDestination(e) {
@@ -409,11 +567,46 @@ export default class extends BaseModal {
     });
   }
 
+  static get PURCHASE_MODAL_CREATE() {
+    return 'PURCHASE_MODAL_CREATE';
+  }
+
+  static get PURCHASE_MODAL_DESTROY() {
+    return 'PURCHASE_MODAL_DESTROY';
+  }
+
+  /**
+   * Returns a promise that will fire progress notifications when a purchase modal
+   * is created. Will also fire a notifications when one is destroyed.
+   */
+  get purchaseModal() {
+    this._purchaseModalDeferred =
+      this._purchaseModalDeferred || $.Deferred();
+
+    if (this._purchaseModal) {
+      this._purchaseModalDeferred.notify({
+        type: this.constructor.PURCHASE_MODAL_CREATE,
+        view: this._purchaseModal,
+      });
+    }
+
+    return this._purchaseModalDeferred.promise();
+  }
+
   startPurchase() {
-    if (this.totalPrice <= 0) {
-      openSimpleMessage(app.polyglot.t('listingDetail.errors.noPurchaseTitle'),
-        app.polyglot.t('listingDetail.errors.zeroPriceMsg'));
-      return;
+    if (!this.model.isCrypto) {
+      if (this.totalPrice <= 0) {
+        openSimpleMessage(app.polyglot.t('listingDetail.errors.noPurchaseTitle'),
+          app.polyglot.t('listingDetail.errors.zeroPriceMsg'));
+        return;
+      }
+    } else {
+      if (typeof this._inventory === 'number' &&
+        this._inventory <= 0) {
+        openSimpleMessage(app.polyglot.t('listingDetail.errors.noPurchaseTitle'),
+          app.polyglot.t('listingDetail.errors.outOfStock'));
+        return;
+      }
     }
 
     const selectedVariants = [];
@@ -424,25 +617,38 @@ export default class extends BaseModal {
       selectedVariants.push(variant);
     });
 
-    if (this.purchaseModal) this.purchaseModale.remove();
+    if (this._purchaseModal) this._purchaseModal.remove();
 
-    this.purchaseModal = new Purchase({
+    this._purchaseModal = new Purchase({
       listing: this.model,
       variants: selectedVariants,
       vendor: this.vendor,
       removeOnClose: true,
       showCloseButton: false,
-      initialState: {
-        isFetching: true,
-        fetchError: '',
-        fetchFailed: false,
-      },
+      phase: 'pay',
+      inventory: this._inventory,
     })
       .render()
       .open();
 
-    this.purchaseModal.on('modal-will-remove', () => (this.purchaseModal = null));
-    this.listenTo(this.purchaseModal, 'closeBtnPressed', () => this.close());
+    if (this._purchaseModalDeferred) {
+      this._purchaseModalDeferred.notify({
+        type: this.constructor.PURCHASE_MODAL_CREATE,
+        view: this._purchaseModal,
+      });
+    }
+
+    this._purchaseModal.on('modal-will-remove', () => {
+      this._purchaseModal = null;
+      if (this._purchaseModalDeferred) {
+        this._purchaseModalDeferred.notify({
+          type: this.constructor.PURCHASE_MODAL_DESTROY,
+        });
+      }
+    });
+
+    this.listenTo(this._purchaseModal, 'closeBtnPressed', () => this.close());
+    recordEvent('Purchase_Start', { ownListing: this.model.isOwnListing });
   }
 
   get shipsFreeToMe() {
@@ -508,21 +714,39 @@ export default class extends BaseModal {
 
   remove() {
     if (this.editModal) this.editModal.remove();
-    if (this.purchaseModal) this.purchaseModal.remove();
+    if (this._purchaseModal) this._purchaseModal.remove();
     if (this.destroyRequest) this.destroyRequest.abort();
     if (this.ratingsFetch) this.ratingsFetch.abort();
-    $(document).off(null, this.boundDocClick);
+    if (this.inventoryFetch) this.inventoryFetch.abort();
+    if (this.moreListingsFetch) this.moreListingsFetch.abort();
+    $(document).off('click', this.boundDocClick);
     super.remove();
   }
 
   render() {
     if (this.dataChangePopIn) this.dataChangePopIn.remove();
 
+    const defaultBadge = app.verifiedMods.defaultBadge(this.model.get('moderators'));
+    let nsfwWarning;
+
+    if (!this.rendered &&
+      this.options.checkNsfw &&
+      this.model.get('item').get('nsfw') &&
+      !this.model.isOwnListing && !app.settings.get('showNsfw')) {
+      nsfwWarning = new NsfwWarning()
+        .render()
+        .open();
+      this.listenTo(nsfwWarning, 'canceled', () => this.close());
+    }
+
     loadTemplate('modals/listingDetail/listing.html', t => {
+      const flatModel = this.model.toJSON();
+
       this.$el.html(t({
-        ...this.model.toJSON(),
+        ...flatModel,
         shipsFreeToMe: this.shipsFreeToMe,
         ownListing: this.model.isOwnListing,
+        price: this.model.price,
         displayCurrency: app.settings.get('localCurrency'),
         // the ships from data doesn't exist yet
         // shipsFromCountry: this.model.get('shipsFrom');
@@ -530,13 +754,37 @@ export default class extends BaseModal {
         defaultCountry: this.defaultCountry,
         vendor: this.vendor,
         openedFromStore: this.options.openedFromStore,
+        currencyValidity: getCurrencyValidity(
+          this.model.get('metadata').get('pricingCurrency') || 'USD'
+        ),
+        hasVerifiedMods: this.hasVerifiedMods,
+        verifiedModsData: app.verifiedMods.data,
+        defaultBadge,
+        isCrypto: this.model.isCrypto,
+        _: { sortBy: _.sortBy },
+        purchaseErrorT: this.purchaseErrorT,
       }));
 
+      if (nsfwWarning) this.$el.addClass('hide');
       super.render();
 
       this.$('.js-rating').append(this.rating.render().$el);
       this.$reviews = this.$('.js-reviews');
       this.$reviews.append(this.reviews.render().$el);
+
+      if (this._latestHash !== this.model.get('hash')) {
+        this.outdateHash();
+      }
+
+      if (this.supportedCurrenciesList) this.supportedCurrenciesList.remove();
+      this.supportedCurrenciesList = this.createChild(SupportedCurrenciesList, {
+        initialState: {
+          currencies: this.model.get('metadata')
+            .get('acceptedCurrencies'),
+        },
+      });
+      this.getCachedEl('.js-supportedCurrenciesList')
+        .append(this.supportedCurrenciesList.render().el);
 
       if (!this.model.isOwnListing) {
         if (this.socialBtns) this.socialBtns.remove();
@@ -545,6 +793,17 @@ export default class extends BaseModal {
         });
         this.$('.js-socialBtns').append(this.socialBtns.render().$el);
       }
+
+      if (this.moreListings) this.moreListings.remove();
+      this.moreListings = this.createChild(MoreListings, {
+        initialState: {
+          vendor: this.vendor,
+          listings: this.moreListingsData,
+        },
+      });
+      this.listenTo(this.moreListings, 'listingDetailOpened', () => this.remove());
+      this.getCachedEl('.js-moreListings')
+        .append(this.moreListings.render().$el);
 
       this.$photoSelectedInner = this.$('.js-photoSelectedInner');
       this._$deleteListing = null;
@@ -571,8 +830,47 @@ export default class extends BaseModal {
       this.renderShippingDestinations(this.defaultCountry);
       this.setSelectedPhoto(this.activePhotoIndex);
       this.setActivePhotoThumbnail(this.activePhotoIndex);
-      this.adjustPriceBySku();
+
+      if (this.model.isCrypto) {
+        const metadata = this.model.get('metadata');
+
+        if (this.cryptoInventory) this.cryptoInventory.remove();
+        this.cryptoInventory = this.createChild(QuantityDisplay, {
+          peerId: this.vendor.peerID,
+          slug: this.model.get('slug'),
+          initialState: {
+            coinType: metadata.get('coinType'),
+            amount: this._inventory,
+          },
+        });
+        this.getCachedEl('.js-cryptoInventory')
+          .html(this.cryptoInventory.render().el);
+
+        if (this.cryptoTitle) this.cryptoTitle.remove();
+        this.cryptoTitle = this.createChild(CryptoTradingPair, {
+          initialState: {
+            tradingPairClass: 'cryptoTradingPairXL rowSm',
+            exchangeRateClass: 'clrT2 exchangeRateLine',
+            fromCur: metadata.get('acceptedCurrencies')[0],
+            toCur: metadata.get('coinType'),
+          },
+        });
+        this.getCachedEl('.js-cryptoTitle')
+          .html(this.cryptoTitle.render().el);
+      } else {
+        this.adjustPriceBySku();
+      }
+
+      if (nsfwWarning) {
+        setTimeout(() => {
+          nsfwWarning.bringToTop();
+          this.$el.removeClass('hide');
+        });
+      }
     });
+
+    this.rendered = true;
+    this._renderedHash = this.model.get('hash');
 
     return this;
   }

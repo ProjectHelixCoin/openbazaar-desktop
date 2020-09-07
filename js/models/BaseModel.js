@@ -116,7 +116,7 @@ export default class extends Model {
     // todo: will it break things if we unset a nested attribute?
     if (!opts.unset) {
       // let's work off of a clone since we modify attrs
-      attrs = JSON.parse(JSON.stringify(attrs));
+      // attrs = JSON.parse(JSON.stringify(attrs));
 
       if (this.nested) {
         const nested = _.result(this, 'nested', []);
@@ -127,6 +127,9 @@ export default class extends Model {
           const nestedInstance = this.attributes[nestedKey];
 
           if (nestedData) {
+            // let's work off of a copy since we modify attrs
+            attrs = { ...attrs };
+
             if (nestedData instanceof NestedClass) {
               attrs[nestedKey] = nestedData;
             } else if (nestedInstance) {
@@ -168,7 +171,9 @@ export default class extends Model {
           const nestedErrs = nestedMd.isValid() ? {} : nestedMd.validationError;
 
           Object.keys(nestedErrs).forEach((nestedErrKey) => {
-            prefixedErrs[`${key}.${nestedErrKey}`] = nestedErrs[nestedErrKey];
+            const prefixedKey = `${key}.${nestedErrKey}`;
+            prefixedErrs[prefixedKey] = errObj[prefixedKey] || [];
+            prefixedErrs[prefixedKey].push(nestedErrs[nestedErrKey]);
           });
         }
       });
@@ -194,8 +199,9 @@ export default class extends Model {
 
             Object.keys(nestedMdErrs).forEach((nestedMdErrKey) => {
               // since indexes can change, we'll index using the model's client id (cid)
-              prefixedErrs[`${key}[${nestedMd.cid}].${nestedMdErrKey}`]
-                = nestedMdErrs[nestedMdErrKey];
+              const prefixedKey = `${key}[${nestedMd.cid}].${nestedMdErrKey}`;
+              prefixedErrs[prefixedKey] = errObj[prefixedKey] || [];
+              prefixedErrs[prefixedKey].push(nestedMdErrs[nestedMdErrKey]);
             });
 
             mergedErrs = {

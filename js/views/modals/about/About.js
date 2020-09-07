@@ -7,13 +7,14 @@ import BaseModal from '../BaseModal';
 import Story from './Story';
 import Contributors from './Contributors';
 import Donations from './Donations';
+import Help from './Help';
 import License from './License';
-import BTCTicker from '../../BTCTicker';
 
 export default class extends BaseModal {
   constructor(options = {}) {
     const opts = {
       removeOnClose: true,
+      initialTab: 'Story',
       ...options,
     };
 
@@ -26,9 +27,10 @@ export default class extends BaseModal {
       Contributors,
       Donations,
       License,
+      Help,
     };
 
-    this.currentTabName = 'Story';
+    this.currentTabName = opts.initialTab;
     this.isBundledApp = remote.getGlobal('isBundledApp');
     this.updatesSupported = remote.getGlobal('updatesSupported');
   }
@@ -53,6 +55,10 @@ export default class extends BaseModal {
 
   selectTab(tabViewName) {
     let tabView = this.tabViewCache[tabViewName];
+
+    if (!tabView && !this.tabViews[tabViewName]) {
+      throw new Error('You are attempting to select an invalid tab.');
+    }
 
     this.$('.js-tab.clrT.active').removeClass('clrT active');
     this.$(`.js-tab[data-tab="${tabViewName}"]`).addClass('clrT active');
@@ -79,20 +85,11 @@ export default class extends BaseModal {
   }
 
   render() {
-    // remove any existing tickers from previous renders
-    if (this.btcTicker) this.btcTicker.remove();
-
-    this.btcTicker = this.createChild(BTCTicker);
-    this.btcTicker.render();
-
-    const sVer = app.settings.get('version');
-    const serverVersion = sVer.substring(sVer.lastIndexOf(':') + 1, sVer.lastIndexOf('/'));
-
     loadTemplate('modals/about/about.html', (t) => {
-      loadTemplate('brandingBox.html', brandingBoxT => {
+      loadTemplate('components/brandingBox.html', brandingBoxT => {
         this.$el.html(t({
           brandingBoxT,
-          serverVersion,
+          serverVersion: app.settings.prettyServerVer,
           ...this.options,
           version,
           isBundledApp: this.isBundledApp,
@@ -102,7 +99,6 @@ export default class extends BaseModal {
 
         this.$tabContent = this.$('.js-tabContent .contentBox');
         this.selectTab(this.currentTabName);
-        this.$('.js-btcTicker').append(this.btcTicker.$el);
       });
     });
 

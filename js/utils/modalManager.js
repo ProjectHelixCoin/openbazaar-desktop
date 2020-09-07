@@ -13,6 +13,7 @@ let settingsModal;
 let debugLogModal;
 let moderatorDetailsModal;
 let _wallet;
+let _walletInitialState;
 
 export function launchEditListingModal(modalOptions = {}) {
   const model = modalOptions.model;
@@ -42,6 +43,7 @@ export function launchEditListingModal(modalOptions = {}) {
 export function launchAboutModal(modalOptions = {}) {
   if (aboutModal) {
     aboutModal.bringToTop();
+    if (modalOptions.initialTab) aboutModal.selectTab(modalOptions.initialTab);
   } else {
     aboutModal = new About({
       removeOnClose: true,
@@ -70,7 +72,7 @@ export function launchSettingsModal(modalOptions = {}) {
     settingsModal.on('modal-will-remove', () => (settingsModal = null));
   }
 
-  return aboutModal;
+  return settingsModal;
 }
 
 export function launchDebugLogModal(modalOptions = {}) {
@@ -93,24 +95,35 @@ export function launchModeratorDetailsModal(modalOptions = {}) {
   return moderatorDetailsModal;
 }
 
-export function launchWallet(modalOptions = {}) {
-  if (_wallet) {
-    _wallet.open();
-  } else {
+export function setWalletInitState(initialState = {}) {
+  _walletInitialState = initialState;
+}
+
+export function createWalletInstance(modalOptions = {}) {
+  if (!_wallet) {
     _wallet = new Wallet({
       removeOnRoute: false,
       ...modalOptions,
-    })
-      .render()
-      .open();
+      initialState: {
+        ..._walletInitialState,
+      },
+    }).render();
 
     app.router.on('will-route', () => _wallet.close());
   }
+}
+
+export function launchWallet(modalOptions = {}) {
+  createWalletInstance(modalOptions);
+  _wallet.open();
 
   return _wallet;
 }
 
 export function getWallet() {
+  if (!_wallet) {
+    createWalletInstance();
+  }
   return _wallet;
 }
 

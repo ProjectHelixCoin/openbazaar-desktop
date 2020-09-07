@@ -1,12 +1,23 @@
-import { isValidBitcoinAddress } from '../../utils/';
-import { decimalToInteger, convertCurrency } from '../../utils/currency';
-import { getWallet } from '../../utils/modalManager';
+import { decimalToInteger, convertCurrency, getExchangeRate } from '../../utils/currency';
+import {
+  getCurrencyByCode as getWalletCurByCode,
+  isSupportedWalletCur,
+  ensureMainnetCode,
+} from '../../data/walletCurrencies';
 import app from '../../app';
 import BaseModel from '../BaseModel';
 
+const getWalletSpendUrl = () => app.getServerUrl('wallet/spend/');
+const getOrderSpendUrl = () => app.getServerUrl('ob/orderspend/');
+
 class Spend extends BaseModel {
+  constructor(attrs, options = {}) {
+    super(attrs, options);
+    this.url = options.url || this.url;
+  }
+
   url() {
-    return app.getServerUrl('wallet/spend/');
+    return getWalletSpendUrl();
   }
 
   defaults() {
@@ -24,15 +35,15 @@ class Spend extends BaseModel {
     ];
   }
 
-  get amountInBitcoin() {
-    let btcAmount = 0;
+  get amountInServerCur() {
+    let cryptoAmount = 0;
     const amount = this.get('amount');
 
     if (typeof amount === 'number') {
-      btcAmount = convertCurrency(amount, this.get('currency'), 'PHR');
+      cryptoAmount = convertCurrency(amount, this.get('currency'), this.get('wallet'));
     }
 
-    return btcAmount;
+    return cryptoAmount;
   }
 
   validate(attrs) {
@@ -42,30 +53,81 @@ class Spend extends BaseModel {
       errObj[fieldName].push(error);
     };
 
-    if (!attrs.address) {
-      addError('address', app.polyglot.t('spendModelErrors.provideAddress'));
-    } else if (!isValidBitcoinAddress(attrs.address)) {
-      addError('address', app.polyglot.t('spendModelErrors.invalidAddress'));
+    const walletCurCode = attrs.wallet;
+    let isWalletCurSupported = false;
+
+    try {
+      isWalletCurSupported = isSupportedWalletCur(walletCurCode);
+    } catch (e) {
+      // pass
     }
 
-    if (typeof attrs.amount !== 'number') {
-      addError('amount', app.polyglot.t('spendModelErrors.provideAmountNumber'));
-    } else if (attrs.amount <= 0) {
-      addError('amount', app.polyglot.t('spendModelErrors.amountGreaterThanZero'));
-    } else if (this.amountInBitcoin >= app.walletBalance.get('confirmed')) {
-      addError('amount', app.polyglot.t('spendModelErrors.insufficientFunds'));
-    }
+    if (!isWalletCurSupported) {
+      addError('wallet', `"${attrs.wallet}" is not a supported wallet currency.`);
+    } else {
+      const walletCur = getWalletCurByCode(walletCurCode);
 
-    if (this.feeLevels.indexOf(attrs.feeLevel) === -1) {
-      addError('feeLevel', `The fee level must be one of [${this.feeLevels}].`);
-    }
+      if (walletCur) {
+        if (!attrs.address) {
+          addError('address', app.polyglot.t('spendModelErrors.provideAddress'));
+        } else if (typeof walletCur.isValidAddress === 'function' &&
+          !walletCur.isValidAddress(attrs.address)) {
+          const cur = app.polyglot.t(
+            `cryptoCurrencies.${walletCurCode}`,
+            { _: walletCurCode }
+          );
 
-    if (attrs.memo && typeof attrs.memo !== 'string') {
-      addError('memo', 'If provided, the memo should be a string.');
-    }
+          addError('address', app.polyglot.t('spendModelErrors.invalidAddress', { cur }));
+        }
 
-    if (!attrs.currency) {
-      addError('currency', 'Please provide a currency.');
+        let exchangeRatesAvailable = false;
+
+        if (!attrs.currency) {
+          addError('currency', 'Please provide a currency.');
+        } else {
+          exchangeRatesAvailable =
+            ensureMainnetCode(attrs.currency) === ensureMainnetCode(attrs.wallet) ||
+              (typeof getExchangeRate(attrs.currency) === 'number' &&
+                typeof getExchangeRate(attrs.wallet) === 'number');
+
+          if (!exchangeRatesAvailable) {
+            addError('currency', app.polyglot.t('spendModelErrors.missingExchangeRateData', {
+              cur: attrs.currency,
+              serverCur: walletCur.code,
+            }));
+          }
+        }
+
+        if (typeof attrs.amount !== 'number') {
+          addError('amount', app.polyglot.t('spendModelErrors.provideAmountNumber'));
+        } else if (attrs.amount <= 0) {
+          addError('amount', app.polyglot.t('spendModelErrors.amountGreaterThanZero'));
+        } else if (exchangeRatesAvailable &&
+          app.walletBalances) {
+          const balanceMd = app.walletBalances.get(attrs.wallet);
+          if (balanceMd && this.amountInServerCur >= balanceMd.get('confirmed')) {
+            addError('amount', app.polyglot.t('spendModelErrors.insufficientFunds'));
+          }
+        }
+
+        if (this.feeLevels.indexOf(attrs.feeLevel) === -1) {
+          addError('feeLevel', `The fee level must be one of [${this.feeLevels}].`);
+        }
+
+        if (attrs.memo && typeof attrs.memo !== 'string') {
+          addError('memo', 'If provided, the memo should be a string.');
+        }
+
+        if (
+          this.url === getOrderSpendUrl() &&
+          (
+            typeof attrs.orderId !== 'string' ||
+            !attrs.orderId
+          )
+        ) {
+          addError('orderId', 'Please provide an orderId.');
+        }
+      }
     }
 
     if (Object.keys(errObj).length) return errObj;
@@ -75,15 +137,16 @@ class Spend extends BaseModel {
 
   sync(method, model, options) {
     options.attrs = options.attrs || this.toJSON();
+    const walletCur = getWalletCurByCode(options.attrs.wallet);
 
     if (method === 'create' || method === 'update') {
       let amount = options.attrs.amount;
 
-      if (options.attrs.currency !== 'PHR') {
-        amount = this.amountInBitcoin;
+      if (options.attrs.currency !== walletCur.code) {
+        amount = this.amountInServerCur;
       }
 
-      options.attrs.amount = decimalToInteger(amount, true);
+      options.attrs.amount = decimalToInteger(amount, walletCur.code);
       delete options.attrs.currency;
     }
 
@@ -114,16 +177,16 @@ export default Spend;
  * (address, amount and optionally currency, memo and feeLevel).
  * @returns {Object} The jqXhr representing the POST call to the server.
  */
-export function spend(fields) {
+export function _spend(fields, options = {}) {
   const attrs = {
-    currency: app && app.settings && app.settings.get('localCurrency') || 'PHR',
+    currency: app && app.settings && app.settings.get('localCurrency') || 'USD',
     feeLevel: app &&
       app.localSettings && app.localSettings.get('defaultTransactionFee') || 'PRIORITY',
     memo: '',
     ...fields,
   };
 
-  const spendModel = new Spend(attrs);
+  const spendModel = new Spend(attrs, options);
   const save = spendModel.save();
 
   if (!save) {
@@ -133,25 +196,30 @@ export function spend(fields) {
       });
   } else {
     save.done(data => {
-      if (app.walletBalance) {
-        app.walletBalance.set(
-          app.walletBalance.parse({
-            confirmed: data.confirmedBalance,
-            unconfirmed: data.unconfirmedBalance,
-          })
-        );
-      }
+      if (app.walletBalances) {
+        const coinType = spendModel.get('wallet');
+        const balanceMd = app.walletBalances.get(spendModel.get('wallet'));
 
-      const wallet = getWallet();
-
-      if (wallet && wallet.onSpendSuccess) {
-        wallet.onSpendSuccess({
-          address: spendModel.get('address'),
-          ...data,
-        });
+        if (balanceMd) {
+          balanceMd.set(
+            balanceMd.parse({
+              code: coinType,
+              confirmed: data.confirmedBalance,
+              unconfirmed: data.unconfirmedBalance,
+            })
+          );
+        }
       }
     });
   }
 
   return save;
+}
+
+export function spend(fields) {
+  return _spend(fields, { url: getWalletSpendUrl() });
+}
+
+export function orderSpend(fields) {
+  return _spend(fields, { url: getOrderSpendUrl() });
 }

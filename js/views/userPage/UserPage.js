@@ -6,7 +6,9 @@ import { followsYou } from '../../utils/follow';
 import { abbrNum } from '../../utils';
 import { capitalize } from '../../utils/string';
 import { isHiRez } from '../../utils/responsive';
+import { recordEvent } from '../../utils/metrics';
 import { launchEditListingModal, launchSettingsModal } from '../../utils/modalManager';
+import { isBlocked, events as blockEvents } from '../../utils/block';
 import { getCurrentConnection } from '../../utils/serverConnect';
 import Listing from '../../models/listing/Listing';
 import Listings from '../../collections/Listings';
@@ -62,6 +64,12 @@ export default class extends baseVw {
 
       if (this.followingCount === 0 && !this.ownPage) this.followingCount = 1;
     });
+
+    this.listenTo(blockEvents, 'blocked unblocked', data => {
+      if (data.peerIds.includes(this.model.id)) {
+        this.setBlockedClass();
+      }
+    });
   }
 
   className() {
@@ -95,8 +103,9 @@ export default class extends baseVw {
   }
 
   clickTab(e) {
-    const targ = $(e.target).closest('.js-tab');
-    this.setState(targ.attr('data-tab'));
+    const tab = $(e.target).closest('.js-tab').attr('data-tab');
+    recordEvent('UserPage_Tab', { tab });
+    this.setTabState(tab);
   }
 
   clickMore() {
@@ -104,10 +113,12 @@ export default class extends baseVw {
   }
 
   clickCustomize() {
+    recordEvent('Settings_Open', { origin: 'userPage' });
     launchSettingsModal({ initialTab: 'Page' });
   }
 
   clickCreateListing() {
+    recordEvent('Listing_New', { origin: 'userPage' });
     const listingModel = new Listing({}, { guid: app.profile.id });
 
     launchEditListingModal({
@@ -116,10 +127,16 @@ export default class extends baseVw {
   }
 
   clickCloseStoreWelcomeCallout() {
+    recordEvent('UserPage_CloseStoreWelcome');
     if (this.curConn && this.curConn.server) {
       this.curConn.server.save({ dismissedStoreWelcome: true });
       this.getCachedEl('.js-storeWelcomeCallout').remove();
     }
+  }
+
+  clickRating() {
+    recordEvent('UserPage_ClickReputation');
+    this.setTabState('reputation');
   }
 
   get followingCount() {
@@ -133,7 +150,7 @@ export default class extends baseVw {
 
     if (count !== this._followingCount) {
       this._followingCount = count;
-      this.getCachedEl('.js-followingCount').text(count);
+      this.getCachedEl('.js-followingCount').text(abbrNum(count));
     }
   }
 
@@ -148,8 +165,12 @@ export default class extends baseVw {
 
     if (count !== this._followerCount) {
       this._followerCount = count;
-      this.getCachedEl('.js-followerCount').text(count);
+      this.getCachedEl('.js-followerCount').text(abbrNum(count));
     }
+  }
+
+  setBlockedClass() {
+    this.$el.toggleClass('isBlocked', isBlocked(this.model.id));
   }
 
   updateHeader() {
@@ -158,7 +179,7 @@ export default class extends baseVw {
 
     if (headerHash) {
       this.$('.js-header').attr('style',
-        `background-image: url(${app.getServerUrl(`ob/images/${headerHash}`)}), 
+        `background-image: url(${app.getServerUrl(`ob/images/${headerHash}`)}),
       url('../imgs/defaultHeader.png')`);
     }
   }
@@ -214,13 +235,13 @@ export default class extends baseVw {
 
     return this.createChild(this.tabViews.Store, {
       ...opts,
-      initialFetch: this.listings.fetch(),
+      initialFetch: Store.fetchListings(this.listings),
       collection: this.listings,
       model: this.model,
     });
   }
 
-  setState(state, options = {}) {
+  setTabState(state, options = {}) {
     if (!state) {
       throw new Error('Please provide a state.');
     }
@@ -304,8 +325,8 @@ export default class extends baseVw {
         ...this.model.toJSON(),
         ownPage: this.ownPage,
         showStoreWelcomeCallout: this.showStoreWelcomeCallout,
-        followingCount: this.followingCount,
-        followerCount: this.followerCount,
+        followingCount: abbrNum(this.followingCount),
+        followerCount: abbrNum(this.followerCount),
       }));
 
       this.$tabContent = this.$('.js-tabContent');
@@ -318,10 +339,12 @@ export default class extends baseVw {
       this.miniProfile = this.createChild(MiniProfile, {
         model: this.model,
         fetchFollowsYou: false,
+        onClickRating: () => this.setTabState('reputation'),
         initialState: {
           followsYou: this.followsYou,
         },
       });
+      this.listenTo(this.miniProfile, 'clickRating', this.clickRating);
       this.$('.js-miniProfileContainer').html(this.miniProfile.render().el);
 
       if (!this.ownPage) {
@@ -333,10 +356,12 @@ export default class extends baseVw {
       }
 
       this.tabViewCache = {}; // clear for re-renders
-      this.setState(this.state, {
+      this.setTabState(this.state, {
         addTabToHistory: false,
         listing: this.options.listing,
       });
+
+      this.setBlockedClass();
     });
 
     return this;

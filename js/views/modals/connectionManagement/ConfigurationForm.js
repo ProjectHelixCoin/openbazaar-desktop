@@ -1,7 +1,7 @@
 import $ from 'jquery';
-import app from '../../../app';
 import openSimpleMessage from '../SimpleMessage';
 import { getCurrentConnection } from '../../../utils/serverConnect';
+import app from '../../../app';
 import loadTemplate from '../../../utils/loadTemplate';
 import baseVw from '../../baseVw';
 
@@ -57,6 +57,8 @@ export default class extends baseVw {
       'click .js-saveConfirmCancel': 'onClickSaveConfirmCancel',
       'change #serverConfigServerIp': 'onChangeServerIp',
       'change [name=useTor]': 'onChangeUseTor',
+      'change [name=serverType]': 'onChangeServerType',
+      'click .js-inUseText': 'onClickInUseText',
     };
   }
 
@@ -79,12 +81,7 @@ export default class extends baseVw {
   }
 
   onSaveClick(e) {
-    const formData = this.getFormData(this.$formFields);
-    this.model.set({
-      ...formData,
-      confirmedTor: this.model.get('confirmedTor') || formData.useTor ||
-        this.showConfigureTorMessage,
-    });
+    this.setModelFromForm();
     this.model.set({}, { validate: true });
 
     if (this.model.validationError) {
@@ -92,7 +89,7 @@ export default class extends baseVw {
       return;
     }
 
-    if (!this.model.isLocalServer() && !formData.SSL) {
+    if (!this.model.isLocalServer() && !this.model.get('SSL')) {
       this.getCachedEl('.js-saveConfirmBox').removeClass('hide');
     } else {
       this.save();
@@ -129,17 +126,43 @@ export default class extends baseVw {
   }
 
   onChangeUseTor(e) {
-    this.getCachedEl('.js-torDetails')
-      .toggleClass('hide', !e.target.checked);
+    this.getCachedEl('form')
+      .toggleClass('useTor', e.target.checked);
   }
 
-  save() {
-    const formData = this.getFormData(this.$formFields);
+  onChangeServerType(e) {
+    this.getCachedEl('.js-standAloneSection')
+      .toggleClass('hide', e.target.value === 'BUILT_IN');
+  }
+
+  onClickInUseText() {
+    // prevents the click of the help icon from selecting the otherwise disabled radio
+    return false;
+  }
+
+  setModelFromForm() {
+    const serverType = this.getFormData(this.getCachedEl('[name=serverType]')).serverType;
+    const builtIn = this.model.isNew() ? serverType === 'BUILT_IN' : this.model.get('builtIn');
+    const formFieldsDataAttr = builtIn ? 'data-field-builtin' : 'data-field-standalone';
+    const formData = this.getFormData(
+      this.getCachedEl(`select[${formFieldsDataAttr}], input[${formFieldsDataAttr}], ` +
+        `textarea[${formFieldsDataAttr}]`)
+    );
+    delete formData.serverType;
     this.model.set({
+      ...this.model.lastSyncedAttrs || {},
       ...formData,
       confirmedTor: this.model.get('confirmedTor') || formData.useTor ||
         this.showConfigureTorMessage,
+      builtIn,
     });
+  }
+
+  /**
+   * Save() assumes that you've previously called setModelFromForm to sync the model
+   * from the UI.
+   */
+  save() {
     const save = this.model.save();
 
     if (save) {

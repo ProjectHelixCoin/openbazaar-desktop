@@ -51,11 +51,15 @@
           .providerBtn {
             padding: 0;
 
+            &:focus, &:hover {
+              outline: none;
+            }
+
             .providerInner {
               opacity: .35;
             }
 
-            &.selecting .providerInner {
+            &.showSelectDefault .providerInner {
               opacity: 1;
             }
           }
@@ -77,6 +81,7 @@
         .addProvider {
           position: absolute;
           height: $thumb;
+          width: $thumb;
         }
       }
 
@@ -162,6 +167,8 @@
       border-radius: 3px;
       border-top-left-radius: 0;
       border-bottom-left-radius: 0;
+      flex-shrink: 0;
+      flex-grow: 1;
     }
   }
 
@@ -174,13 +181,21 @@
     padding-right: 5px;
 
     label {
-      line-height: 1.4em;
-      min-height: 1.4em;
+      font-size: $tx5b;
+      line-height: 1.3em;
+      min-height: 1.3em;
       padding: 0.3em 0px;
     }
 
     .select2 {
       margin-top: 12px;
+    }
+
+    .btnRadio, .checkboxCol {
+      label > span .emoji {
+        position: relative;
+        top: 0.1em;
+      }
     }
   }
 
@@ -191,18 +206,56 @@
     }
 
     .loadingSearch {
-      display: none;
-    }
-
-    &.loading .loadingSearch {
       display: flex;
 
       .spinner {
         position: absolute;
-        top: 150px;
+        top: calc(25% - #{$spinnerLg/2});
       }
 
       .listingsGrid {
+        display: none;
+      }
+    }
+
+    .noResultsMessage {
+      display: none;
+    }
+
+    &.noResults {
+      .cryptoListViewHeader {
+        display: none;
+      }
+
+      .noResultsMessage {
+        display:block;
+      }
+
+      .pageControls,
+      .listingGrid {
+        display: none;
+      }
+    }
+
+    &.searchCategory {
+      position: relative;
+      margin-top: 50px;
+
+      .cryptoListViewHeader {
+        padding: 15px 30px;
+        font-size: 1.4rem;
+      }
+
+      .listingsGrid.listingsGridCryptoListView  .listingCard {
+        padding: 6px 30px;
+        font-size: 1.6rem;
+      }
+
+      &:first-child {
+        margin-top: 20px;
+      }
+
+      &:last-child .categoryRow {
         display: none;
       }
     }

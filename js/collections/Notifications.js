@@ -1,4 +1,6 @@
 import _ from 'underscore';
+import moment from 'moment';
+import { capitalize } from '../utils/string';
 import { Collection } from 'backbone';
 import app from '../app';
 
@@ -75,7 +77,8 @@ export function getNotifDisplayData(attrs, options = {}) {
     text = app.polyglot.t('notifications.text.orderConfirmation', {
       vendorName,
     });
-  } else if (attrs.type === 'declined') {
+    // Check for the new 'orderDeclined' value, but maintain compatibility with older notifications.
+  } else if (attrs.type === 'orderDeclined' || attrs.type === 'declined') {
     const vendorName = opts.native ?
       getName(attrs.vendorHandle, attrs.vendorId) :
       `<a class="clrTEm" href="#${attrs.vendorId}">` +
@@ -84,7 +87,8 @@ export function getNotifDisplayData(attrs, options = {}) {
     text = app.polyglot.t('notifications.text.declined', {
       vendorName,
     });
-  } else if (attrs.type === 'canceled') {
+    // Check for the new 'cancel' value, but maintain compatibility with older notifications.
+  } else if (attrs.type === 'cancel' || attrs.type === 'cancelled') {
     const buyerName = opts.native ?
       getName(attrs.buyerHandle, attrs.buyerId) :
       `<a class="clrTEm" href="#${attrs.buyerId}">` +
@@ -118,6 +122,15 @@ export function getNotifDisplayData(attrs, options = {}) {
     route = `#transactions/sales?orderId=${attrs.orderId}`;
     text = app.polyglot.t('notifications.text.orderComplete', {
       buyerName,
+    });
+  } else if (attrs.type === 'processingError') {
+    const vendorName = opts.native ?
+      getName(attrs.vendorHandle, attrs.vendorId) :
+      `<a class="clrTEm" href="#${attrs.vendorId}">` +
+        `${getName(attrs.vendorHandle, attrs.vendorId)}</a>`;
+    route = `#transactions/purchases?orderId=${attrs.orderId}`;
+    text = app.polyglot.t('notifications.text.processingError', {
+      vendorName,
     });
   } else if (attrs.type === 'disputeOpen') {
     if (attrs.disputeeId === app.profile.id) {
@@ -190,6 +203,71 @@ export function getNotifDisplayData(attrs, options = {}) {
     route = `#${attrs.peerId}`;
     text = app.polyglot.t(`notifications.text.${attrs.type}`, {
       name,
+    });
+  } else if ([
+    'vendorDisputeTimeout',
+    'buyerDisputeTimeout',
+    'buyerDisputeExpiry',
+    'moderatorDisputeExpiry',
+  ].includes(attrs.type)) {
+    const prevMomentDaysThreshold = moment.relativeTimeThreshold('d');
+    let orderIdKey = 'orderId';
+
+    if (attrs.type === 'vendorDisputeTimeout') {
+      orderIdKey = 'purchaseOrderId';
+    } else if (attrs.type === 'moderatorDisputeExpiry') {
+      orderIdKey = 'disputeCaseId';
+    }
+
+    const orderIdShort = `#${attrs[orderIdKey].slice(0, 4)}…`;
+    let transactionTab = 'sales';
+    let orderApiFilter = 'orderId';
+
+    if ([
+      'buyerDisputeTimeout',
+      'buyerDisputeExpiry',
+    ].includes(attrs.type)) {
+      transactionTab = 'purchases';
+    } else if (attrs.type === 'moderatorDisputeExpiry') {
+      transactionTab = 'cases';
+      orderApiFilter = 'caseId';
+    }
+
+    route = `#transactions/${transactionTab}?${orderApiFilter}=${attrs[orderIdKey]}`;
+
+    if (attrs.expiresIn > 0) {
+      // temporarily upping the moment threshold of number of days before month is used,
+      // so e,g. 45 is represented as '45 days' instead of '1 month'.
+      moment.relativeTimeThreshold('d', 364);
+
+      const timeRemaining = moment(Date.now())
+        .from(Date.now() - (attrs.expiresIn * 1000), true);
+
+      text = app.polyglot.t(`notifications.text.${attrs.type}`, {
+        orderLink: opts.native ?
+          orderIdShort :
+          `<a href="${route}" class="clrTEm">${orderIdShort}</a>`,
+        timeRemaining,
+      });
+
+      text = text.startsWith(timeRemaining) ? capitalize(text) : text;
+
+      // restore the days timeout threshold
+      moment.relativeTimeThreshold('d', prevMomentDaysThreshold);
+    } else {
+      text = app.polyglot.t(`notifications.text.${attrs.type}Expired`, {
+        orderLink: opts.native ?
+          orderIdShort :
+          `<a href="${route}" class="clrTEm">${orderIdShort}</a>`,
+      });
+    }
+  } else if (attrs.type === 'vendorFinalizedPayment') {
+    const orderIdShort = `#${attrs.orderId.slice(0, 4)}…`;
+    route = `#transactions/purchases?orderId=${attrs.orderId}`;
+    text = app.polyglot.t('notifications.text.vendorFinalizedPayment', {
+      orderLink: opts.native ?
+        orderIdShort :
+        `<a href="${route}" class="clrTEm">${orderIdShort}</a>`,
     });
   }
 

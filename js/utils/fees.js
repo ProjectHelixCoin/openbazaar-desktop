@@ -10,12 +10,14 @@ export const feeLevels = [
 ];
 
 const cacheExpires = 1000 * 60 * 5;
-const estimateFeeCache = new Map();
+const estimateFeeCache = {};
 let watchingTransactions = false;
 
 function onSocket(e) {
   if (e.jsonData.wallet && !e.jsonData.wallet.height) {
-    estimateFeeCache.clear();
+    if (estimateFeeCache[e.jsonData.wallet.wallet]) {
+      estimateFeeCache[e.jsonData.wallet.wallet].clear();
+    }
   }
 }
 
@@ -44,12 +46,13 @@ function watchTransactions() {
  * of the wallet.
  *
  * @param {string} feeLevel - The fee level
- * @param {amount} number - The amount of the transaction in Bitcoin.
+ * @param {amount} number - The amount of the transaction in the servers currency -
+ *   not in base units. (e.g. for BTC, provide a BTC amount, not Satoshi)
  * @return {object} An jQuery promise which on success will resolve with the fee
  *   in Bitcoin. If the call fails, the deferred will fail and pass on the args the
  *   xhr fail handler receives.
  */
-export function estimateFee(feeLevel, amount) {
+export function estimateFee(coinType, feeLevel, amount) {
   if (feeLevels.indexOf(feeLevel) === -1) {
     throw new Error(`feelevel must be one of ${feeLevels.join(', ')}`);
   }
@@ -58,41 +61,57 @@ export function estimateFee(feeLevel, amount) {
     throw new Error('Please provide an amount as a number.');
   }
 
+  if (typeof coinType !== 'string' || !coinType) {
+    throw new Error('Please provide the coinType as a string.');
+  }
+
+  const amountInBaseUnits = decimalToInteger(amount, coinType);
+
+  if (amountInBaseUnits === undefined) {
+    throw new Error('Unable to convert the given amount to base units of the given ' +
+      'coinType. The coinType is likely not a known wallet currency.');
+  }
+
   watchTransactions();
 
   let deferred;
   const cacheKey = `${feeLevel}-${amount}`;
-  const cached = estimateFeeCache.get(cacheKey);
+  const cached = estimateFeeCache[coinType] && estimateFeeCache[coinType].get(cacheKey);
 
   if (cached) {
     if (cached && Date.now() - cached.createdAt < cacheExpires) {
       deferred = cached.deferred;
     } else {
       // cache is expired
-      estimateFeeCache.delete(cacheKey);
+      estimateFeeCache[coinType].delete(cacheKey);
     }
   }
 
   if (!deferred) {
     deferred = $.Deferred();
 
-    estimateFeeCache.set(cacheKey, {
+    estimateFeeCache[coinType] = estimateFeeCache[coinType] || new Map();
+    estimateFeeCache[coinType].set(cacheKey, {
       deferred,
       createdAt: Date.now(),
     });
 
-    const queryArgs = `feeLevel=${feeLevel}&amount=${decimalToInteger(amount, true)}`;
-    $.get(app.getServerUrl(`wallet/estimatefee/?${queryArgs}`))
+    const queryArgs =
+      `feeLevel=${feeLevel}&amount=${amountInBaseUnits}`;
+    $.get(app.getServerUrl(`wallet/estimatefee/${coinType}?${queryArgs}`))
       .done((...args) => {
-        deferred.resolve(integerToDecimal(args[0].estimatedFee, true), ...args.slice(1));
+        deferred.resolve(
+          integerToDecimal(args[0].estimatedFee, coinType), ...args.slice(1)
+        );
       }).fail((xhr, ...args) => {
         deferred.reject(xhr, ...args);
 
         const knownReasons = ['ERROR_INSUFFICIENT_FUNDS', 'ERROR_DUST_AMOUNT'];
 
         // don't cache calls that failed with an unknown reason
-        if (xhr.responseJSON && knownReasons.indexOf(xhr.responseJSON.reason) === -1) {
-          estimateFeeCache.delete(cacheKey);
+        if (xhr.responseJSON && knownReasons.indexOf(xhr.responseJSON.reason) === -1 &&
+          estimateFeeCache[coinType]) {
+          estimateFeeCache[coinType].delete(cacheKey);
         }
       });
   }
@@ -100,7 +119,7 @@ export function estimateFee(feeLevel, amount) {
   return deferred.promise();
 }
 
-let getFeesCache = {};
+const getFeesCache = {};
 
 /**
  * Will call the fees api ('wallet/fees') on the server.
@@ -109,26 +128,31 @@ let getFeesCache = {};
  *   per byte in Satoshi for each fee level. If the call fails, the deferred will
  *   fail and pass on the args the xhr fail handler receives.
  */
-export function getFees() {
+export function getFees(coinType) {
+  if (typeof coinType !== 'string' || !coinType) {
+    throw new Error('Please provide the coinType as a string.');
+  }
+
   let deferred;
 
-  if (getFeesCache.deferred && Date.now() - getFeesCache.createdAt < cacheExpires) {
-    deferred = getFeesCache.deferred;
+  if (getFeesCache && getFeesCache[coinType] && getFeesCache[coinType].deferred &&
+    Date.now() - getFeesCache[coinType].createdAt < cacheExpires) {
+    deferred = getFeesCache[coinType].deferred;
   }
 
   if (!deferred) {
     deferred = $.Deferred();
 
-    getFeesCache = {
+    getFeesCache[coinType] = {
       deferred,
       createdAt: Date.now(),
     };
 
-    $.get(app.getServerUrl('wallet/fees'))
+    $.get(app.getServerUrl(`wallet/fees/${coinType}`))
       .done((...args) => deferred.resolve(...args))
       .fail((...args) => {
         deferred.reject(...args);
-        getFeesCache = {};
+        delete getFeesCache[coinType];
       });
   }
 

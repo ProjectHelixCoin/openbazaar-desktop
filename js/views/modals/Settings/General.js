@@ -3,7 +3,7 @@ import '../../../lib/select2';
 import app from '../../../app';
 import { translationLangs } from '../../../data/languages';
 import { getTranslatedCountries } from '../../../data/countries';
-import { getTranslatedCurrencies } from '../../../data/currencies';
+import { getCurrencies } from '../../../data/currencies';
 import loadTemplate from '../../../utils/loadTemplate';
 import baseVw from '../../baseVw';
 import { openSimpleMessage } from '../SimpleMessage';
@@ -35,13 +35,14 @@ export default class extends baseVw {
       (md, resp, opts) => app.localSettings.set(opts.attrs));
 
     this.countryList = getTranslatedCountries();
-    this.currencyList = getTranslatedCurrencies();
+    this.currencyList = getCurrencies();
   }
 
   events() {
     return {
       'click .js-save': 'save',
       'change #settingsCurrencySelect': 'onChangeCurrencySelect',
+      'click .js-restoreDefaultVerifiedModProvider': 'clickRestoreDefaultVerifiedModProvider',
     };
   }
 
@@ -51,6 +52,12 @@ export default class extends baseVw {
     } else {
       this.$bitcoinUnitField.addClass('hide');
     }
+  }
+
+  clickRestoreDefaultVerifiedModProvider() {
+    // this is currently hidden in the template because it was taken out of the design for now
+    const defaultVal = this.localSettings.defaults().verifiedModsProvider;
+    this.getCachedEl('.js-verifiedModsProvider').val(defaultVal);
   }
 
   getFormData(fields = this.$settingsFields) {

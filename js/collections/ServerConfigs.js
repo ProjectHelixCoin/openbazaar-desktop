@@ -1,5 +1,7 @@
-import { Collection, Model } from 'backbone';
-import LocalStorageSync from '../utils/backboneLocalStorage';
+import { platform, homedir } from 'os';
+import app from '../app';
+import { Collection } from 'backbone';
+import LocalStorageSync from '../utils/lib/backboneLocalStorage';
 import ServerConfig from '../models/ServerConfig';
 
 export default class extends Collection {
@@ -19,14 +21,6 @@ export default class extends Collection {
     super(models, options);
     this._activeId = localStorage.activeServerConfig;
     this.on('sync', () => this.bindActiveServerChangeHandler());
-  }
-
-  /**
-   * The "default" config is the configuration that is associated with the built-in
-   * server in the bundled app.
-   */
-  get defaultConfig() {
-    return this.findWhere({ default: true });
   }
 
   /**
@@ -72,34 +66,95 @@ export default class extends Collection {
     }
   }
 
-  set(models = [], options = {}) {
-    // Not sure why if I create a model via Collection.Create, a single model
-    // is being passed into this method, instead of an array. The documentation
-    // does not reflect this.
-    const modelsList = models instanceof Model ? [models] : models;
+  get homedir() {
+    if (!this._homedir) {
+      this._homedir = homedir();
+    }
 
-    const defaultConfig = this.defaultConfig;
-    let defaultCount = this.defaultConfig ? 1 : 0;
+    return this._homedir;
+  }
 
-    // ensure we are not trying to set more than one default config
-    if (defaultConfig) {
-      modelsList.forEach(model => {
-        const jsonModel = model instanceof Model ?
-          model.toJSON() : model;
-        const defaultConfigId = this.defaultConfig ? this.defaultConfig.id : '';
+  get walletCurrencyToDataDir() {
+    return {
+      BTC: {
+        win32: `${this.homedir}/PhoreMarketplace`,
+        darwin: `${this.homedir}/Library/Application Support/PhoreMarketplace`,
+        linux: `${this.homedir}/.PhoreMarketplace`,
+      },
+      BCH: {
+        win32: `${this.homedir}/PhoreMarketplace-bitcoincash`,
+        darwin: `${this.homedir}/Library/Application Support/PhoreMarketplace-bitcoincash`,
+        linux: `${this.homedir}/.PhoreMarketplace-bitcoincash`,
+      },
+      ZEC: {
+        win32: `${this.homedir}/PhoreMarketplace-zcash`,
+        darwin: `${this.homedir}/Library/Application Support/PhoreMarketplace-zcash`,
+        linux: `${this.homedir}/.PhoreMarketplace-zcash`,
+      },
+    };
+  }
 
-        if (jsonModel.default &&
-          (!options.merge || !jsonModel.id || jsonModel.id !== defaultConfigId)) {
-          defaultCount += 1;
+  migrate() {
+    let builtInCount = 0;
+
+    this.forEach(serverConfig => {
+      // Migrate any old "built in" configurations containing the 'default' flag to
+      // use the new 'builtIn' flag.
+      const isDefault = serverConfig.get('default');
+
+      if (typeof isDefault === 'boolean') {
+        serverConfig.unset('default');
+        const configSave = serverConfig.save({ builtIn: isDefault });
+
+        if (!configSave) {
+          // developer error or wonky data
+          console.error('There was an error migrating the server config, ' +
+            `${serverConfig.get('name')}, from the 'default' to the 'built-in' style.`);
         }
+      }
+
+      if (serverConfig.get('builtIn')) builtInCount++;
+
+      // Migrate a walletCurrency to a dataDir.
+      const walletCurrency = serverConfig.get('walletCurrency');
+
+      if (walletCurrency) {
+        serverConfig.unset('walletCurrency');
+
+        if (typeof walletCurrency === 'string') {
+          const walletCurPaths = this.walletCurrencyToDataDir[walletCurrency];
+
+          if (walletCurPaths) {
+            const dataDir = walletCurPaths[platform()];
+            if (dataDir) {
+              const configSave = serverConfig.save({ dataDir });
+
+              if (!configSave) {
+                // developer error or wonky data
+                console.error('There was an error migrating the dataDir for server ' +
+                  `config ${serverConfig.get('name')}.`);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    // If there is just one built-in server, we'll ensure it has the correct name. If there
+    // are multiple, which means they are legazy ones for different walletCurrencies, we'll
+    // leave them be so the name still includes the currency and the user could still distinguish
+    // between the two.
+    if (builtInCount === 1) {
+      const builtIn = this.findWhere({ builtIn: true });
+      const configSave = builtIn.save({
+        name: app.polyglot.t('connectionManagement.builtInServerName'),
       });
-    }
 
-    if (defaultCount > 1) {
-      throw new Error('The collection already has a default model and you' +
-        ' are attempting to add another one. Only one default model is allowed.');
+      if (!configSave) {
+        // developer error or wonky data
+        console.error('There was an error updating the name for built-in server ' +
+          `config ${builtIn.get('name')}.`);
+      }
     }
-
-    super.set(models, options);
   }
 }

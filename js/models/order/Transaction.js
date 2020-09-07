@@ -9,8 +9,8 @@ export default class extends BaseModel {
   parse(response = {}) {
     return {
       ...response,
-      // Convert satoshi to BTC
-      value: integerToDecimal(response.value, true),
+      // Convert from base units
+      value: integerToDecimal(response.value, response.paymentCoin),
     };
   }
 }

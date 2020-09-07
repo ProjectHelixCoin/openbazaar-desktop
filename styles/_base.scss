@@ -236,7 +236,7 @@ svg {
     height: calc(100% - #{$bar + $barLg});
     box-sizing: border-box;
     z-index: 2; // chat needs to be on top of modals
-    @include chatOpeningTransition(width, background-color, border-color, height);
+    @include chatOpeningTransition(width, background-color, height);
     overflow-y: auto;
     overflow-x: hidden;
     background-color: transparent;
@@ -357,8 +357,28 @@ svg {
     display: inline-block;
   }
 
+  .block {
+    display: block;
+  }
+  
   .pointer {
     cursor: pointer;
+  }
+
+  .unclickable {
+    pointer-events: none;
+  }
+
+  .lineHeight1 {
+    line-height: 1;
+  }
+
+  .noWrap {
+    white-space: nowrap;
+  }
+
+  .hideIfEmpty:empty {
+    display: none;
   }
 
   // external brand colors. They should not be overwritten by theme colors.
@@ -377,6 +397,10 @@ svg {
   .tumblrColor {
     color: #35465c;
   }
+
+  .githubColor, .redditColor {
+    color: #000;
+  }  
 }
 
 // Sometimes, I just like floats.

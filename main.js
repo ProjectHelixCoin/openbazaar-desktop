@@ -1,6 +1,6 @@
 import {
   app, BrowserWindow, ipcMain,
-  Menu, nativeImage, Tray, session, crashReporter,
+  Menu, Tray, session, crashReporter,
   autoUpdater, shell, dialog,
 } from 'electron';
 import homedir from 'homedir';
@@ -17,20 +17,16 @@ import { bindLocalServerEvent } from './js/utils/mainProcLocalServerEvents';
 let mainWindow;
 let trayMenu;
 let closeConfirmed = false;
-// const version = app.getVersion();
+const version = app.getVersion();
 
-// function isOSWin64() {
-//   return process.arch === 'x64' || process.env.hasOwnProperty('PROCESSOR_ARCHITEW6432');
-// }
+// We no longer support win32, but process.platform returns Windows 64 bit as win32.
+const plat = process.platform === 'win32' ? 'win64' : process.platform;
 
-// const plat = process.platform === 'win32' ?
-//  `${isOSWin64() ? 'win' : 'win32'}` : process.platform;
-
-// const feedURL = `https://hazel-server-imflzbzzpa.now.sh/update/${plat}/${version}`;
+const feedURL = `https://search.phore.io/update/${plat}/${version}`;
 
 global.serverLog = '';
 
-function handleStartupEvent() {
+const handleStartupEvent = function () {
   if (process.platform !== 'win32') {
     return false;
   }
@@ -79,27 +75,27 @@ function handleStartupEvent() {
   }
 
   return true;
-}
+};
 
 if (handleStartupEvent()) {
-  console.log('OpenBazaar started on Windows...');
+  console.log('Phore Marketplace started on Windows...');
 }
 
-
-const serverPath = `${__dirname}${path.sep}..${path.sep}openbazaar-go${path.sep}`;
+const serverPath = `${__dirname}${path.sep}..${path.sep}pm-go${path.sep}`;
 const serverFilename = process.platform === 'darwin' || process.platform === 'linux' ?
-  'openbazaard' : 'openbazaard.exe';
+  'marketplaced' : 'marketplaced.exe';
 const isBundledApp = fs.existsSync(serverPath + serverFilename);
 global.isBundledApp = isBundledApp;
 let localServer;
 
 if (isBundledApp) {
   global.localServer = localServer = new LocalServer({
+    getMainWindow: () => mainWindow,
     serverPath,
     serverFilename,
     errorLogPath: `${__dirname}${path.sep}..${path.sep}..${path.sep}error.log`,
     // IMPORTANT: From the main process, only bind events to the localServer instance
-    // unsing the functions in the mainProcLocalServerEvents module. The reasons for that
+    // using the functions in the mainProcLocalServerEvents module. The reasons for that
     // will be explained in the module.
   });
 
@@ -140,10 +136,10 @@ if (isBundledApp || argv.userData) {
 }
 
 crashReporter.start({
-  productName: 'OpenBazaar 2',
-  companyName: 'OpenBazaar',
+  productName: 'Phore Marketplace',
+  companyName: 'Phore Blockchain',
   submitURL: 'http://104.131.17.128:1127/post',
-  autoSubmit: true,
+  uploadToServer: true,
   extra: {
     bundled: isBundledApp,
   },
@@ -177,9 +173,15 @@ function createWindow() {
 
   let helpSubmenu = [
     {
-      label: 'Documentation',
+      label: 'Website',
       click() {
-        shell.openExternal('https://docs.openbazaar.org');
+        shell.openExternal('https://phore.io');
+      },
+    },
+    {
+      label: 'Support',
+      click() {
+        shell.openExternal('https://phore.io/information/');
       },
     },
   ];
@@ -192,7 +194,7 @@ function createWindow() {
           if (updatesSupported) {
             checkForUpdates();
           } else {
-            shell.openExternal('https://github.com/phoreproject/openbazaar-desktop/releases');
+            shell.openExternal('https://github.com/phoreproject/pm-desktop/releases');
           }
         },
       },
@@ -375,21 +377,14 @@ function createWindow() {
   Menu.setApplicationMenu(menu);
 
   ipcMain.on('contextmenu-click', () => {
-    menu.popup();
+    menu.popup({});
   });
 
   // put logic here to set tray icon based on OS
-  // https://github.com/electron/electron/issues/7657#issuecomment-368236509
   let osTrayIcon = 'openbazaar-system-tray.png';
   if (process.platform === 'darwin') osTrayIcon = 'openbazaar-mac-system-tray.png';
-  const iconPath = path.join(__dirname, 'imgs', osTrayIcon);
-  let trayIcon = nativeImage.createFromPath(iconPath);
-  trayIcon = trayIcon.resize({
-    width: 16,
-    height: 16,
-  });
 
-  trayMenu = new Tray(trayIcon);
+  trayMenu = new Tray(`${__dirname}/imgs/${osTrayIcon}`);
 
   let trayTemplate = [];
 
@@ -462,9 +457,12 @@ function createWindow() {
     minWidth: 1170,
     minHeight: 700,
     center: true,
-    title: 'OpenBazaar',
+    title: 'PhoreMarketplace',
     frame: false,
     icon: `${__dirname}/imgs/icon.png`,
+    webPreferences: {
+      nodeIntegration: true,
+    },
   });
 
   // and load the index.html of the app.
@@ -551,7 +549,7 @@ function createWindow() {
       checkForUpdates();
     });
 
-    // autoUpdater.setFeedURL(feedURL);
+    autoUpdater.setFeedURL(feedURL);
   }
 
   mainWindow.webContents.on('dom-ready', () => {
@@ -560,7 +558,7 @@ function createWindow() {
   });
 
   // Set up protocol
-  app.setAsDefaultProtocolClient('ob');
+  app.setAsDefaultProtocolClient('pm');
 
   // Check for URL hijacking in the browser
   preventWindowNavigation(mainWindow);
@@ -629,7 +627,7 @@ ipcMain.on('active-server-set', (e, server) => {
         `Basic ${new Buffer(`${un}:${pw}`).toString('base64')}`;
     }
 
-    if (global.authCookie && server.default) {
+    if (global.authCookie && server.builtIn) {
       details.requestHeaders.Cookie = `OpenBazaar_Auth_Cookie=${global.authCookie}`;
     }
 

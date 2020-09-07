@@ -29,14 +29,6 @@
   images are added */
 }
 
-.phrIcon {
-  width: 16px;
-  height: 16px;
-  background-size: contain;
-  display: inline-block;
-  background-image: url('../../imgs/phrIcon128.png');
-}
-
 .copyNotification {
   font-weight: bold;
   font-size: $baseFontSize;
@@ -59,6 +51,8 @@
 }
 
 .ratingStrip {
+  display: inline-flex;
+
   .ratingIcons {
     display: inline-flex;
     flex-direction: row-reverse;
@@ -66,6 +60,10 @@
     .ratingIcon {
       opacity: 0.4;
       pointer-events: none;
+
+      .emoji {
+        margin-right: 0.3em;
+      }
 
       &.clickable {
         pointer-events: auto;
@@ -89,7 +87,6 @@
 .emoji {
   height: 1em;
   width: 1em;
-  margin-right: 0.3em;
 
   &.fade {
     opacity: .35;
@@ -114,5 +111,22 @@
     .reported {
       pointer-events: none;
     }
+  }
+}
+
+.quantityDisplay {
+  position: relative;
+  display: inline-block;
+
+  // Dimensions will probably need to be adjusted if your spinner and/or alert icon vary from
+  // the defaults. If you need to change these, please override somewhere else as other places
+  // are likely using these defaults.
+  min-width: 20px;
+  min-height: 13px;
+
+  .spinner {
+    position: absolute;
+    top: 0;
+    left: 0;
   }
 }
